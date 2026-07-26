@@ -11,7 +11,7 @@ export default async function handler(req, res) {
   const type = url.searchParams.get('type')
 
   if (type === 'playlist') {
-    return handlePlaylist(req, res, url)
+    return handlePlaylist(req, res)
   }
 
   if (type === 'ts') {
@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   res.status(404).json({ error: 'Not found. Use ?type=playlist or ?type=ts&url=...' })
 }
 
-async function handlePlaylist(req, res, url) {
+async function handlePlaylist(req, res) {
   const rawUrl = process.env.STREAM_URL_RAW
   if (!rawUrl) {
     return res.status(500).json({ error: 'STREAM_URL_RAW not configured' })
@@ -68,27 +68,14 @@ async function handlePlaylist(req, res, url) {
     }
   }
 
-  const direct = url.searchParams.get('direct') === '1'
   const protocol = req.headers['x-forwarded-proto'] || 'https'
   const host = req.headers.host
+  const proxyBase = `${protocol}://${host}/api/proxy?type=ts&url=`
 
-  let modified
-  if (direct) {
-    // Direct mode: keep original CDN URLs for TS segments
-    modified = text.replace(/^(?!#)(\S*\.ts(?:\?[^\s]*)?)$/gim, (_, tsPath) => {
-      if (tsPath.startsWith('http')) return tsPath
-      return baseUrl + tsPath
-    })
-    res.setHeader('X-TS-Mode', 'direct')
-  } else {
-    // Proxy mode: rewrite TS URLs through our proxy
-    const proxyBase = `${protocol}://${host}/api/proxy?type=ts&url=`
-    modified = text.replace(/^(?!#)(\S*\.ts(?:\?[^\s]*)?)$/gim, (_, tsPath) => {
-      const absoluteUrl = tsPath.startsWith('http') ? tsPath : baseUrl + tsPath
-      return proxyBase + encodeURIComponent(absoluteUrl)
-    })
-    res.setHeader('X-TS-Mode', 'proxy')
-  }
+  const modified = text.replace(/^(?!#)(\S*\.ts(?:\?[^\s]*)?)$/gim, (_, tsPath) => {
+    const absoluteUrl = tsPath.startsWith('http') ? tsPath : baseUrl + tsPath
+    return proxyBase + encodeURIComponent(absoluteUrl)
+  })
 
   res.setHeader('Content-Type', 'application/vnd.apple.mpegurl')
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
@@ -112,7 +99,7 @@ async function handleTs(req, res, url) {
       }
     })
     if (!tsResp.ok) {
-      return res.status(502).json({ error: `CDN returned ${tsResp.status} for TS` })
+      return res.status(tsResp.status).json({ error: `CDN returned ${tsResp.status}` })
     }
     const buffer = Buffer.from(await tsResp.arrayBuffer())
     res.setHeader('Content-Type', 'video/MP2T')
