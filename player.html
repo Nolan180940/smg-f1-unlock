@@ -81,9 +81,12 @@ document.getElementById('toggle-btn').onclick = () => {
 };
 inp.onkeydown = (e) => { if (e.key === 'Enter') load(inp.value); };
 
-// Read from URL hash
+// Read from URL hash or sessionStorage (survives F5 refresh)
 const hash = location.hash.slice(1);
-if (hash) try { load(decodeURIComponent(hash)); location.hash = ''; } catch(e) {}
+const saved = sessionStorage.getItem('hlsUrl');
+const url = hash || saved;
+if (hash) location.hash = '';
+if (url) { sessionStorage.setItem('hlsUrl', url); try { load(decodeURIComponent(url)); } catch(e) {} }
 </script>
 </body>
 </html>
