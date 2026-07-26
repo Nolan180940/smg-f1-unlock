@@ -11,7 +11,7 @@ export default async function handler(req, res) {
   const type = url.searchParams.get('type')
 
   if (type === 'playlist') {
-    return handlePlaylist(req, res)
+    return handlePlaylist(req, res, url)
   }
 
   if (type === 'ts') {
@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   res.status(404).json({ error: 'Not found. Use ?type=playlist or ?type=ts&url=...' })
 }
 
-async function handlePlaylist(req, res) {
+async function handlePlaylist(req, res, url) {
   const rawUrl = process.env.STREAM_URL_RAW
   if (!rawUrl) {
     return res.status(500).json({ error: 'STREAM_URL_RAW not configured' })
@@ -45,7 +45,6 @@ async function handlePlaylist(req, res) {
   let text
   let source = 'cache'
 
-  // Try CDN first for live playlist
   try {
     const playlistResp = await fetch(m3u8Url, {
       headers: {
@@ -61,7 +60,6 @@ async function handlePlaylist(req, res) {
       throw new Error(`HTTP ${playlistResp.status}`)
     }
   } catch (err) {
-    // Fall back to saved content
     if (data.m3u8Content) {
       text = data.m3u8Content
       source = 'cache'
@@ -70,14 +68,27 @@ async function handlePlaylist(req, res) {
     }
   }
 
+  const direct = url.searchParams.get('direct') === '1'
   const protocol = req.headers['x-forwarded-proto'] || 'https'
   const host = req.headers.host
-  const proxyBase = `${protocol}://${host}/api/proxy?type=ts&url=`
 
-  const modified = text.replace(/^(?!#)(\S*\.ts(?:\?[^\s]*)?)$/gim, (_, tsPath) => {
-    const absoluteUrl = tsPath.startsWith('http') ? tsPath : baseUrl + tsPath
-    return proxyBase + encodeURIComponent(absoluteUrl)
-  })
+  let modified
+  if (direct) {
+    // Direct mode: keep original CDN URLs for TS segments
+    modified = text.replace(/^(?!#)(\S*\.ts(?:\?[^\s]*)?)$/gim, (_, tsPath) => {
+      if (tsPath.startsWith('http')) return tsPath
+      return baseUrl + tsPath
+    })
+    res.setHeader('X-TS-Mode', 'direct')
+  } else {
+    // Proxy mode: rewrite TS URLs through our proxy
+    const proxyBase = `${protocol}://${host}/api/proxy?type=ts&url=`
+    modified = text.replace(/^(?!#)(\S*\.ts(?:\?[^\s]*)?)$/gim, (_, tsPath) => {
+      const absoluteUrl = tsPath.startsWith('http') ? tsPath : baseUrl + tsPath
+      return proxyBase + encodeURIComponent(absoluteUrl)
+    })
+    res.setHeader('X-TS-Mode', 'proxy')
+  }
 
   res.setHeader('Content-Type', 'application/vnd.apple.mpegurl')
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
