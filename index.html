@@ -30,7 +30,7 @@ if(d.title){document.title=d.title;t.textContent=d.title}
 var v=document.getElementById('v')
 var url='/api/proxy?type=playlist'
 if(Hls.isSupported()){
-var hls=new Hls()
+var hls=new Hls({liveSyncDurationCount:3,liveMaxLatencyDurationCount:10,maxBufferLength:30,enableWorker:true,backbufferLength:30})
 hls.loadSource(url)
 hls.attachMedia(v)
 hls.on(Hls.Events.MANIFEST_PARSED,function(){v.play().catch(function(){})})
