@@ -91,17 +91,17 @@ async function getStreamUrl() {
 
     console.log('  Found:', m3u8Url)
 
-    console.log('[5] Verifying m3u8 URL...')
-    const testResp = await fetch(m3u8Url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.kankanews.com/'
-      }
-    })
-    if (!testResp.ok) {
-      throw new Error(`m3u8 returned HTTP ${testResp.status}`)
+    console.log('[5] Fetching m3u8 content from browser context...')
+    const content = await page.evaluate(async (url) => {
+      const resp = await fetch(url)
+      if (!resp.ok) return null
+      return await resp.text()
+    }, m3u8Url)
+
+    if (!content) {
+      throw new Error('Failed to fetch m3u8 content from browser')
     }
-    console.log('  Verification OK')
+    console.log('  Content OK, length:', content.length)
 
     const data = {
       m3u8Url,
