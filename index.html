@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SMG Five Sports</title>
+<meta name="robots" content="noindex">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+video{width:100%;max-width:1280px;max-height:100vh;display:block}
+@media(prefers-color-scheme:light){body{background:#fff}}
+</style>
+</head>
+<body>
+<video id="v" controls autoplay playsinline></video>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+(function(){
+fetch('/api/visit',{method:'POST',keepalive:true}).catch(function(){})
+fetch('/api/now-playing').then(function(r){return r.json()}).then(function(d){
+if(d.title)document.title=d.title
+}).catch(function(){})
+var v=document.getElementById('v')
+var url='/api/proxy?type=playlist'
+if(Hls.isSupported()){
+var hls=new Hls()
+hls.loadSource(url)
+hls.attachMedia(v)
+hls.on(Hls.Events.MANIFEST_PARSED,function(){v.play().catch(function(){})})
+}else if(v.canPlayType('application/vnd.apple.mpegurl')){
+v.src=url
+}
+})()
+</script>
+</body>
+</html>
