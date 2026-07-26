@@ -40,30 +40,36 @@ async function handlePlaylist(req, res) {
     return res.status(503).json({ error: 'No stream URL available' })
   }
 
+  const m3u8Url = data.m3u8Url
+  const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1)
   let text
+  let source = 'cache'
 
-  if (data.m3u8Content) {
-    text = data.m3u8Content
-  } else {
-    const m3u8Url = data.m3u8Url
-    const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1)
-
-    try {
-      const playlistResp = await fetch(m3u8Url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Referer': 'https://www.kankanews.com/'
-        }
-      })
-      if (!playlistResp.ok) throw new Error(`HTTP ${playlistResp.status}`)
+  // Try CDN first for live playlist
+  try {
+    const playlistResp = await fetch(m3u8Url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.kankanews.com/'
+      },
+      cache: 'no-store'
+    })
+    if (playlistResp.ok) {
       text = await playlistResp.text()
-    } catch (err) {
+      source = 'cdn'
+    } else {
+      throw new Error(`HTTP ${playlistResp.status}`)
+    }
+  } catch (err) {
+    // Fall back to saved content
+    if (data.m3u8Content) {
+      text = data.m3u8Content
+      source = 'cache'
+    } else {
       return res.status(502).json({ error: `Failed to fetch playlist: ${err.message}` })
     }
   }
 
-  const m3u8Url = data.m3u8Url
-  const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1)
   const protocol = req.headers['x-forwarded-proto'] || 'https'
   const host = req.headers.host
   const proxyBase = `${protocol}://${host}/api/proxy?type=ts&url=`
@@ -74,7 +80,10 @@ async function handlePlaylist(req, res) {
   })
 
   res.setHeader('Content-Type', 'application/vnd.apple.mpegurl')
-  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  res.setHeader('Pragma', 'no-cache')
+  res.setHeader('Expires', '0')
+  res.setHeader('X-Playlist-Source', source)
   res.status(200).send(modified)
 }
 
@@ -96,7 +105,7 @@ async function handleTs(req, res, url) {
     }
     const buffer = Buffer.from(await tsResp.arrayBuffer())
     res.setHeader('Content-Type', 'video/MP2T')
-    res.setHeader('Cache-Control', 'public, max-age=3600')
+    res.setHeader('Cache-Control', 'no-store')
     res.status(200).send(buffer)
   } catch (err) {
     return res.status(502).json({ error: `Failed to fetch TS: ${err.message}` })
