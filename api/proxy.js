@@ -21,53 +21,83 @@ export default async function handler(req, res) {
   res.status(404).json({ error: 'Not found. Use ?type=playlist or ?type=ts&url=...' })
 }
 
-async function handlePlaylist(req, res) {
+async function fetchStreamUrl() {
   const rawUrl = process.env.STREAM_URL_RAW
-  if (!rawUrl) {
-    return res.status(500).json({ error: 'STREAM_URL_RAW not configured' })
-  }
+  if (!rawUrl) return null
 
-  let data
-  try {
-    const resp = await fetch(rawUrl, { cache: 'no-store' })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    data = await resp.json()
-  } catch (err) {
-    return res.status(503).json({ error: `Failed to fetch stream-url: ${err.message}` })
-  }
+  const resp = await fetch(rawUrl, { cache: 'no-store' })
+  if (!resp.ok) return null
+  return await resp.json()
+}
 
-  if (!data.m3u8Url) {
+async function tryFetchM3u8(m3u8Url) {
+  const resp = await fetch(m3u8Url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Referer': 'https://www.kankanews.com/'
+    },
+    cache: 'no-store'
+  })
+  if (!resp.ok) return null
+  return await resp.text()
+}
+
+async function handlePlaylist(req, res) {
+  const data = await fetchStreamUrl()
+  if (!data || !data.m3u8Url) {
     return res.status(503).json({ error: 'No stream URL available' })
   }
 
-  const m3u8Url = data.m3u8Url
-  const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1)
+  let m3u8Url = data.m3u8Url
   let text
   let source = 'cache'
 
-  try {
-    const playlistResp = await fetch(m3u8Url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.kankanews.com/'
-      },
-      cache: 'no-store'
-    })
-    if (playlistResp.ok) {
-      text = await playlistResp.text()
-      source = 'cdn'
-    } else {
-      throw new Error(`HTTP ${playlistResp.status}`)
+  // Try 1: fetch from CDN with saved URL
+  text = await tryFetchM3u8(m3u8Url)
+  if (text) {
+    source = 'cdn'
+  } else {
+    // Try 2: call kankanews API to get fresh stream URL
+    try {
+      const apiResp = await fetch('https://live.kankanews.com/content/pc/tv/huikan?id=10', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': 'https://live.kankanews.com/'
+        },
+        cache: 'no-store'
+      })
+      if (apiResp.ok) {
+        const apiData = await apiResp.json()
+        let streamUrl = null
+        if (apiData.result && apiData.result.live_url) streamUrl = apiData.result.live_url
+        else if (apiData.result && apiData.result.play_url) streamUrl = apiData.result.play_url
+        else if (apiData.data && apiData.data.url) streamUrl = apiData.data.url
+
+        if (streamUrl) {
+          const freshText = await tryFetchM3u8(streamUrl)
+          if (freshText) {
+            text = freshText
+            m3u8Url = streamUrl
+            source = 'api'
+          }
+        }
+      }
+    } catch (e) {
+      // API failed, continue to fallback
     }
-  } catch (err) {
-    if (data.m3u8Content) {
+
+    // Try 3: use cached m3u8 content
+    if (!text && data.m3u8Content) {
       text = data.m3u8Content
       source = 'cache'
-    } else {
-      return res.status(502).json({ error: `Failed to fetch playlist: ${err.message}` })
     }
   }
 
+  if (!text) {
+    return res.status(502).json({ error: 'No playlist available' })
+  }
+
+  const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1)
   const protocol = req.headers['x-forwarded-proto'] || 'https'
   const host = req.headers.host
   const proxyBase = `${protocol}://${host}/api/proxy?type=ts&url=`
