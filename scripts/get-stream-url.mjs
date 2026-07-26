@@ -62,7 +62,37 @@ async function getStreamUrl() {
     })
     console.log('  Shield bypass:', bypassResult)
 
-    console.log('[4] Waiting for m3u8 URL...')
+    console.log('[4] Extracting program title...')
+    let pageTitle = 'SMG Five Sports'
+    try {
+      const extracted = await page.evaluate(() => {
+        const vue = document.querySelector('#__nuxt')?.__vue__
+        if (!vue) return null
+
+        function findComponent(root, name) {
+          if (root.$options && root.$options.name === name) return root
+          for (const child of root.$children || []) {
+            const found = findComponent(child, name)
+            if (found) return found
+          }
+          return null
+        }
+
+        const huikan = findComponent(vue, 'HuikanIndex')
+        if (!huikan) return null
+
+        if (huikan.currChannel && huikan.currChannel.name) return huikan.currChannel.name
+        if (huikan.currChannelDetail && huikan.currChannelDetail.name) return huikan.currChannelDetail.name
+        if (huikan.programDetail && huikan.programDetail.channel_name) return huikan.programDetail.channel_name
+        return null
+      })
+      if (extracted) pageTitle = extracted
+    } catch (e) {
+      console.log('  Title extraction failed, using default')
+    }
+    console.log('  Title:', pageTitle)
+
+    console.log('[5] Waiting for m3u8 URL...')
     let m3u8Url = null
     for (let i = 0; i < 30; i++) {
       if (m3u8Urls.length > 0) {
@@ -91,7 +121,7 @@ async function getStreamUrl() {
 
     console.log('  Found:', m3u8Url)
 
-    console.log('[5] Fetching m3u8 content from browser context...')
+    console.log('[6] Fetching m3u8 content from browser context...')
     const content = await page.evaluate(async (url) => {
       const resp = await fetch(url)
       if (!resp.ok) return null
@@ -106,12 +136,12 @@ async function getStreamUrl() {
     const data = {
       m3u8Url,
       m3u8Content: content,
-      title: 'SMG Five Sports',
+      title: pageTitle,
       updatedAt: new Date().toISOString()
     }
 
     writeFileSync(STREAM_URL_PATH, JSON.stringify(data))
-    console.log('[6] Written to stream-url.json (content length:', content.length, ')')
+    console.log('[7] Written to stream-url.json (content length:', content.length, ')')
     return m3u8Url
   } finally {
     await browser.close()
