@@ -105,12 +105,13 @@ async function getStreamUrl() {
 
     const data = {
       m3u8Url,
+      m3u8Content: content,
       title: 'SMG Five Sports',
       updatedAt: new Date().toISOString()
     }
 
-    writeFileSync(STREAM_URL_PATH, JSON.stringify(data, null, 2))
-    console.log('[6] Written to stream-url.json')
+    writeFileSync(STREAM_URL_PATH, JSON.stringify(data))
+    console.log('[6] Written to stream-url.json (content length:', content.length, ')')
     return m3u8Url
   } finally {
     await browser.close()

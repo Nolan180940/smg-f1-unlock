@@ -29,7 +29,7 @@ async function handlePlaylist(req, res) {
 
   let data
   try {
-    const resp = await fetch(rawUrl)
+    const resp = await fetch(rawUrl, { cache: 'no-store' })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     data = await resp.json()
   } catch (err) {
@@ -40,23 +40,30 @@ async function handlePlaylist(req, res) {
     return res.status(503).json({ error: 'No stream URL available' })
   }
 
-  const m3u8Url = data.m3u8Url
-  const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1)
+  let text
 
-  let playlistResp
-  try {
-    playlistResp = await fetch(m3u8Url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.kankanews.com/'
-      }
-    })
-    if (!playlistResp.ok) throw new Error(`HTTP ${playlistResp.status}`)
-  } catch (err) {
-    return res.status(502).json({ error: `Failed to fetch playlist: ${err.message}` })
+  if (data.m3u8Content) {
+    text = data.m3u8Content
+  } else {
+    const m3u8Url = data.m3u8Url
+    const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1)
+
+    try {
+      const playlistResp = await fetch(m3u8Url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': 'https://www.kankanews.com/'
+        }
+      })
+      if (!playlistResp.ok) throw new Error(`HTTP ${playlistResp.status}`)
+      text = await playlistResp.text()
+    } catch (err) {
+      return res.status(502).json({ error: `Failed to fetch playlist: ${err.message}` })
+    }
   }
 
-  const text = await playlistResp.text()
+  const m3u8Url = data.m3u8Url
+  const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1)
   const protocol = req.headers['x-forwarded-proto'] || 'https'
   const host = req.headers.host
   const proxyBase = `${protocol}://${host}/api/proxy?type=ts&url=`
@@ -77,21 +84,21 @@ async function handleTs(req, res, url) {
     return res.status(400).json({ error: 'Missing url parameter' })
   }
 
-  let tsResp
   try {
-    tsResp = await fetch(tsUrl, {
+    const tsResp = await fetch(tsUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Referer': 'https://www.kankanews.com/'
       }
     })
-    if (!tsResp.ok) throw new Error(`HTTP ${tsResp.status}`)
+    if (!tsResp.ok) {
+      return res.status(502).json({ error: `CDN returned ${tsResp.status} for TS` })
+    }
+    const buffer = Buffer.from(await tsResp.arrayBuffer())
+    res.setHeader('Content-Type', 'video/MP2T')
+    res.setHeader('Cache-Control', 'public, max-age=3600')
+    res.status(200).send(buffer)
   } catch (err) {
     return res.status(502).json({ error: `Failed to fetch TS: ${err.message}` })
   }
-
-  const buffer = Buffer.from(await tsResp.arrayBuffer())
-  res.setHeader('Content-Type', 'video/MP2T')
-  res.setHeader('Cache-Control', 'public, max-age=3600')
-  res.status(200).send(buffer)
 }
