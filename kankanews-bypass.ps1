@@ -54,7 +54,7 @@ $browserWsUrl = $ver.webSocketDebuggerUrl
 
 # Helper: evaluate JS via CDP
 function EvalJS($id, $js) {
-    $e = $js -replace '"', '\"'
+    $e = $js -replace '\\', '\\\\' -replace '"', '\"' -replace "`r`n", '\n' -replace "`r", '\n' -replace "`t", '\t'
     $json = "{`"id`":$id,`"method`":`"Runtime.evaluate`",`"params`":{`"expression`":`"$e`",`"awaitPromise`":true}}"
     return [CDP]::Send($wsUrl, $json) | ConvertFrom-Json
 }
@@ -63,17 +63,17 @@ function EvalJS($id, $js) {
 function WaitForM3u8() {
     for ($t = 0; $t -lt 30; $t++) {
         Start-Sleep 1
-        $r = EvalJS 10 @"
+        $r = EvalJS 10 @'
 (function() {
-    var entries = performance.getEntriesByType('resource');
+    var entries = performance.getEntriesByType("resource");
     for (var i = 0; i < entries.length; i++) {
-        if (entries[i].name.indexOf('.m3u8') > -1 && entries[i].name.indexOf('manifest') < 0) {
+        if (entries[i].name.indexOf(".m3u8") > -1 && entries[i].name.indexOf("manifest") < 0) {
             return entries[i].name;
         }
     }
-    return '';
+    return "";
 })()
-"@
+'@
         $val = $r.result.result.value
         if ($val) { return $val }
     }
@@ -83,10 +83,10 @@ function WaitForM3u8() {
 # Bypass copyright shield
 Write-Host "[2] Bypassing copyright shield..."
 Start-Sleep 2
-$r = EvalJS 1 @"
+$r = EvalJS 1 @'
 (function() {
-    var vue = document.querySelector('#__nuxt').__vue__;
-    if (!vue) return 'NO_VUE';
+    var vue = document.querySelector("#__nuxt").__vue__;
+    if (!vue) return "NO_VUE";
     function find(c, n) {
         if (c.$options && c.$options.name === n) return c;
         for (var i = 0; c.$children && i < c.$children.length; i++) {
@@ -94,15 +94,15 @@ $r = EvalJS 1 @"
         }
         return null;
     }
-    var h = find(vue, 'HuikanIndex');
-    if (!h || !h.programObj) return 'NO_COMP';
-    if (h.programObj.is_shield !== 1) return 'ALREADY';
+    var h = find(vue, "HuikanIndex");
+    if (!h || !h.programObj) return "NO_COMP";
+    if (h.programObj.is_shield !== 1) return "ALREADY";
     h.programObj.is_shield = 0;
     h.$forceUpdate();
     setTimeout(function() { try { h.initPlayer(); } catch(e) {} }, 100);
-    return 'OK';
+    return "OK";
 })()
-"@
+'@
 $status = $r.result.result.value
 Write-Host "  $([string]$status)"
 
@@ -132,9 +132,9 @@ if ($m3u8) {
         Write-Host "[refresh] Getting new stream URL..."
 
         # Re-bypass shield and init new HLS stream
-        $r = EvalJS 1 @"
+        $r = EvalJS 1 @'
 (function() {
-    var vue = document.querySelector('#__nuxt').__vue__;
+    var vue = document.querySelector("#__nuxt").__vue__;
     if (!vue) return;
     function find(c, n) {
         if (c.$options && c.$options.name === n) return c;
@@ -143,14 +143,14 @@ if ($m3u8) {
         }
         return null;
     }
-    var h = find(vue, 'HuikanIndex');
+    var h = find(vue, "HuikanIndex");
     if (h && h.programObj) {
         if (h.programObj.is_shield === 1) h.programObj.is_shield = 0;
         h.$forceUpdate();
         setTimeout(function() { try { h.initPlayer(); } catch(e) {} }, 200);
     }
 })()
-"@
+'@
         Start-Sleep 5
         $newUrl = WaitForM3u8
         if ($newUrl -and $newUrl -ne $m3u8) {
