@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SMG Five Sports</title>
+<title>Loading...</title>
 <meta name="robots" content="noindex">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -24,39 +24,29 @@ video{width:100%;max-height:100vh;display:block}
 (function(){
 fetch('/api/visit',{method:'POST',keepalive:true}).catch(function(){})
 var t=document.getElementById('title')
+var v=document.getElementById('v')
+
 fetch('/api/now-playing').then(function(r){return r.json()}).then(function(d){
 if(d.title){document.title=d.title;t.textContent=d.title}
 }).catch(function(){})
-var v=document.getElementById('v')
-var url='/api/proxy?type=playlist'
-function startPlayback(){
+
+fetch('/api/proxy?type=stream').then(function(r){return r.json()}).then(function(d){
+if(d.url){
 if(typeof Hls!=='undefined'&&Hls.isSupported()){
-var hls=new Hls({liveSyncDurationCount:3,liveMaxLatencyDurationCount:10,maxBufferLength:30,enableWorker:false,backbufferLength:30})
-hls.loadSource(url)
+var hls=new Hls({liveSyncDurationCount:3,liveMaxLatencyDurationCount:10,enableWorker:false})
+hls.loadSource(d.url)
 hls.attachMedia(v)
-hls.on(Hls.Events.MANIFEST_PARSED,function(){
-v.play().catch(function(e){console.log('play() failed:',e)})
-})
-hls.on(Hls.Events.ERROR,function(event,data){
-console.log('HLS error:',data.type,data.details)
-if(data.fatal){
-if(data.type===Hls.ErrorTypes.NETWORK_ERROR){
-console.log('Network error, trying to recover...')
-hls.startLoad()
-}else if(data.type===Hls.ErrorTypes.MEDIA_ERROR){
-console.log('Media error, trying to recover...')
-hls.recoverMediaError()
-}
-}
-})
+hls.on(Hls.Events.MANIFEST_PARSED,function(){v.play().catch(function(){})})
 }else if(v.canPlayType('application/vnd.apple.mpegurl')){
-v.src=url
+v.src=d.url
+}
 }else{
-console.log('HLS not supported')
-t.textContent='播放器加载失败'
+t.textContent='Stream unavailable'
 }
-}
-startPlayback()
+}).catch(function(e){
+console.log('Failed to get stream URL:',e)
+t.textContent='Failed to load stream'
+})
 })()
 </script>
 </body>
