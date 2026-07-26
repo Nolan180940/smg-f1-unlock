@@ -63,7 +63,7 @@ async function getStreamUrl() {
     console.log('  Shield bypass:', bypassResult)
 
     console.log('[4] Extracting program title...')
-    let pageTitle = 'SMG Five Sports'
+    let pageTitle = '五星体育'
     try {
       const extracted = await page.evaluate(() => {
         const vue = document.querySelector('#__nuxt')?.__vue__
@@ -81,10 +81,17 @@ async function getStreamUrl() {
         const huikan = findComponent(vue, 'HuikanIndex')
         if (!huikan) return null
 
-        if (huikan.currChannel && huikan.currChannel.name) return huikan.currChannel.name
-        if (huikan.currChannelDetail && huikan.currChannelDetail.name) return huikan.currChannelDetail.name
-        if (huikan.programDetail && huikan.programDetail.channel_name) return huikan.programDetail.channel_name
-        return null
+        let channelName = '五星体育'
+        if (huikan.currChannel && huikan.currChannel.name) channelName = huikan.currChannel.name
+        else if (huikan.currChannelDetail && huikan.currChannelDetail.name) channelName = huikan.currChannelDetail.name
+
+        let programName = ''
+        if (huikan.programObj && huikan.programObj.name) programName = huikan.programObj.name
+        else if (huikan.programDetail && huikan.programDetail.name) programName = huikan.programDetail.name
+        else if (huikan.playingProgramObj && huikan.playingProgramObj.name) programName = huikan.playingProgramObj.name
+
+        if (programName) return channelName + ' - ' + programName
+        return channelName
       })
       if (extracted) pageTitle = extracted
     } catch (e) {
