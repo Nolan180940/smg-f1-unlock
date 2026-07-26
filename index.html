@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -8,18 +8,24 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
-video{width:100%;max-width:1280px;max-height:100vh;display:block}
-@media(prefers-color-scheme:light){body{background:#fff}}
+.wrap{position:relative;width:100%;max-width:1280px}
+video{width:100%;max-height:100vh;display:block}
+.title{position:absolute;top:0;left:0;right:0;padding:12px 16px;background:linear-gradient(180deg,rgba(0,0,0,.7),transparent);color:#fff;font-size:14px;font-weight:600;pointer-events:none;z-index:1}
+@media(prefers-color-scheme:light){body{background:#222}.title{color:#eee}}
 </style>
 </head>
 <body>
+<div class="wrap">
+<div class="title" id="title">SMG Five Sports</div>
 <video id="v" controls autoplay playsinline></video>
+</div>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 <script>
 (function(){
 fetch('/api/visit',{method:'POST',keepalive:true}).catch(function(){})
+var t=document.getElementById('title')
 fetch('/api/now-playing').then(function(r){return r.json()}).then(function(d){
-if(d.title)document.title=d.title
+if(d.title){document.title=d.title;t.textContent=d.title}
 }).catch(function(){})
 var v=document.getElementById('v')
 var url='/api/proxy?type=playlist'
