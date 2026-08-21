@@ -25,7 +25,7 @@ CREATE TABLE visits (
 ## 2. Vercel — 创建项目
 
 1. 打开 [vercel.com](https://vercel.com) → **Add New Project**
-2. 导入 `smg-f1-unlock--F1-` 仓库
+2. 导入 `smg-f1-unlock` 仓库
 3. 框架预设选 **Other**，**不需要** Build Command
 4. 添加以下环境变量（Environment Variables）：
 
@@ -34,7 +34,7 @@ CREATE TABLE visits (
 | `SUPABASE_URL` | `https://xxx.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY` | `eyJ...`（service_role key） |
 | `STATS_KEY` | 你自己设置的密码（查看统计用） |
-| `STREAM_URL_RAW` | `https://raw.githubusercontent.com/Nolan180940/smg-f1-unlock--F1-/main/stream-url.json` |
+| `STREAM_URL_RAW` | `https://raw.githubusercontent.com/Nolan180940/smg-f1-unlock/main/stream-url.json` |
 
 5. 点 **Deploy**
 
