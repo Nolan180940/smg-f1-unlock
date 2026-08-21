@@ -47,12 +47,15 @@
 var v=document.querySelector('.huikan').__vue__;
 function f(o){if(!o)return;o.is_shield=0;o.is_review=1;o.can_review=1}
 f(v.programObj);f(v.programDetail);f(v.playingProgramObj);
-v.currChannelDetail.copyright_image='';
-v.programDetail.channel_info=v.programDetail.channel_info||{};
-v.programDetail.channel_info.live_address=v.currChannelDetail.live_address;
+if(v.currChannelDetail){v.currChannelDetail.copyright_image='';v.currChannelDetail.live_shift=0}
+if(v.currChannel){v.currChannel.copyright_image='';v.currChannel.live_shift=0}
+if(v.currChannelDetail&&v.currChannelDetail.live_address){
+  v.programDetail.channel_info=v.programDetail.channel_info||{};
+  v.programDetail.channel_info.live_address=v.currChannelDetail.live_address}
 v.isCopyright=false;
-document.querySelector('.image-mask').style.display='none';
-v.initPlayer();
+var m=document.querySelector('.image-mask');if(m)m.style.display='none';
+v.$forceUpdate();
+try{v.initPlayer();}catch(e){}
 ```
 
 4. 播放器出现，开始观看。

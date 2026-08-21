@@ -64,9 +64,11 @@ async function getStreamUrl() {
       fix(huikan.programObj)
       fix(huikan.programDetail)
       fix(huikan.playingProgramObj)
+      if (Array.isArray(huikan.programList)) huikan.programList.forEach(fix)
 
       // 2026-08: clear copyright image
-      if (huikan.currChannelDetail) huikan.currChannelDetail.copyright_image = ''
+      if (huikan.currChannelDetail) { huikan.currChannelDetail.copyright_image = ''; huikan.currChannelDetail.live_shift = 0; }
+      if (huikan.currChannel) { huikan.currChannel.copyright_image = ''; huikan.currChannel.live_shift = 0; }
 
       // 2026-08: restore live_address from channel detail (server removed it from program/detail API)
       if (huikan.currChannelDetail && huikan.currChannelDetail.live_address && huikan.programDetail) {

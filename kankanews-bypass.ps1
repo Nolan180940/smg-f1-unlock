@@ -49,7 +49,9 @@ $BypassJS = @'
     fix(h.programObj);
     fix(h.programDetail);
     fix(h.playingProgramObj);
-    if (h.currChannelDetail) h.currChannelDetail.copyright_image = "";
+    if (h.programList && h.programList.forEach) h.programList.forEach(fix);
+    if (h.currChannel) { h.currChannel.copyright_image = ""; h.currChannel.live_shift = 0; }
+    if (h.currChannelDetail) { h.currChannelDetail.copyright_image = ""; h.currChannelDetail.live_shift = 0; }
     if (h.currChannelDetail && h.currChannelDetail.live_address && h.programDetail) {
         h.programDetail.channel_info = h.programDetail.channel_info || {};
         if (!h.programDetail.channel_info.live_address) {
