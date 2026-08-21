@@ -30,6 +30,14 @@
         location.replace(target);
         return;
     }
+    // Fix broken redirect: live.kankanews.com/huikan/10 → /huikan?id=10
+    var brokenPath = location.pathname.match(/^\/huikan\/(\d+)$/);
+    if (brokenPath) {
+        var fixed = location.origin + "/huikan?id=" + brokenPath[1];
+        console.log("[SMGTV] Fixing broken URL:", location.href, "→", fixed);
+        location.replace(fixed);
+        return;
+    }
     console.log("[SMGTV] UA:", navigator.userAgent);
 
     // ===== 1. CSS: hide copyright mask =====
