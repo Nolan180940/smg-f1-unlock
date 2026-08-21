@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name             收看SMGTV电视节目
 // @namespace        http://tampermonkey.net/
-// @version          0.13
+// @version          0.14
 // @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制（Safari/Stay 兼容 + 多路径 Vue 探测 + 回放功能）
 // @author           https://github.com/Nolan180940
-// @match            *://*.kankanews.com/*
-// @include          *://live.kankanews.com/*
+// @match            https://live.kankanews.com/*
+// @match            https://m.kankanews.com/*
+// @match            http://live.kankanews.com/*
+// @match            http://m.kankanews.com/*
 // @icon             https://live.kankanews.com/favicon.ico
 // @grant            none
 // @run-at           document-body
@@ -16,8 +18,16 @@
 (function() {
     "use strict";
 
-    console.log("[SMGTV] ========== v0.13 ==========");
+    console.log("[SMGTV] ========== v0.14 ==========");
     console.log("[SMGTV] URL:", location.href);
+
+    // ===== 0. Mobile redirect: m.kankanews.com → live.kankanews.com =====
+    if (location.hostname === "m.kankanews.com") {
+        var target = location.href.replace("m.kankanews.com", "live.kankanews.com");
+        console.log("[SMGTV] Mobile site detected, redirecting to:", target);
+        location.replace(target);
+        return; // stop script, the redirect will re-trigger it
+    }
     console.log("[SMGTV] UA:", navigator.userAgent);
 
     // ===== 1. CSS: hide copyright mask =====
