@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name             收看SMGTV电视节目
 // @namespace        http://tampermonkey.net/
-// @version          0.9
-// @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制
+// @version          0.10
+// @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制（2026-08-21 适配 isCopyright 开关 + live_address 服务端清空）
 // @author           https://github.com/Popukok
 // @match            *://*.kankanews.com/*
 // @include          *://live.kankanews.com/*
@@ -128,6 +128,18 @@
             vue.currChannel.copyright_image = "";
             vue.currChannel.live_shift = 0;
         }
+
+        // 2026-08 NEW: restore live_address from channel detail (server removed it from program detail API)
+        if (vue.currChannelDetail && vue.currChannelDetail.live_address) {
+            if (!vue.programDetail) vue.programDetail = {};
+            if (!vue.programDetail.channel_info) vue.programDetail.channel_info = {};
+            if (!vue.programDetail.channel_info.live_address) {
+                vue.programDetail.channel_info.live_address = vue.currChannelDetail.live_address;
+            }
+        }
+
+        // 2026-08 NEW: bypass isCopyright gate (initPlayer destroys player when true)
+        vue.isCopyright = false;
 
         if (typeof vue.countdown === "number") vue.countdown = 99999999;
         vue.showOpenApp = false;

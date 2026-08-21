@@ -27,15 +27,17 @@
 
 1. **隐藏 `.image-mask`** — 把版权遮罩图藏掉
 2. **修改 Vue 组件数据** — 把 `is_shield` 改成 `0`，`is_review` / `can_review` 改成 `1`，清空 `copyright_image`
-3. **手动调用 `initPlayer()`** — 触发播放器初始化，解密 `live_address` 并加载 HLS 视频流
+3. **绕过 `isCopyright` 开关**（2026-08 新增）— 网站在 Vue 组件上加了 `isCopyright` 标志，为真时 `initPlayer()` 会直接销毁播放器，必须设为 `false`
+4. **恢复流地址**（2026-08 新增）— 服务端不再把 `live_address` 放进节目详情接口，需要从频道接口复制回来
+5. **手动调用 `initPlayer()`** — 触发播放器初始化，解密 `live_address` 并加载 HLS 视频流
 
-三步做完，xgplayer 播放器正常加载，HLS 流开始播放。
+五步做完，xgplayer 播放器正常加载，HLS 流开始播放。
 
 ---
 
 ## 快速开始
 
-### 方式一：Console 粘贴（最简单，每次刷新后要重新粘贴，20260705亲测可用有效，强烈推荐）
+### 方式一：Console 粘贴（最简单，每次刷新后要重新粘贴，20260821更新可用，强烈推荐）
 
 1. 用 Edge / Chrome 打开 https://live.kankanews.com/huikan?id=10
 2. 按 **F12** → 点 **Console** 标签
@@ -46,13 +48,20 @@ var v=document.querySelector('.huikan').__vue__;
 function f(o){if(!o)return;o.is_shield=0;o.is_review=1;o.can_review=1}
 f(v.programObj);f(v.programDetail);f(v.playingProgramObj);
 v.currChannelDetail.copyright_image='';
+v.programDetail.channel_info=v.programDetail.channel_info||{};
+v.programDetail.channel_info.live_address=v.currChannelDetail.live_address;
+v.isCopyright=false;
 document.querySelector('.image-mask').style.display='none';
 v.initPlayer();
 ```
 
 4. 播放器出现，开始观看。
 
-> ⚠️ 刷新页面后需要重新粘贴。切换频道不受影响（脚本已自动拦截后续 API）。
+> ⚠️ 刷新页面后需要重新粘贴。切换频道不受影响。
+>
+> 📅 **2026-08-21 更新说明**：网站加了两个新拦截：
+> 1. Vue 组件新增 `isCopyright` 标志，为真时 `initPlayer()` 会直接销毁播放器 → 需要设 `v.isCopyright=false`
+> 2. 服务端把 `/program/detail` 接口的 `live_address` 清空了 → 需要从频道接口复制：`v.programDetail.channel_info.live_address = v.currChannelDetail.live_address`
 
 ---
 
