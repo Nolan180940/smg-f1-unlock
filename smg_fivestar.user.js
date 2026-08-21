@@ -3,7 +3,7 @@
 // @namespace        http://tampermonkey.net/
 // @version          0.10
 // @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制（2026-08-21 适配 isCopyright 开关 + live_address 服务端清空）
-// @author           https://github.com/Popukok
+// @author           https://github.com/Nolan180940
 // @match            *://*.kankanews.com/*
 // @include          *://live.kankanews.com/*
 // @icon             https://live.kankanews.com/favicon.ico
