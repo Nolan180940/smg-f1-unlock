@@ -114,7 +114,7 @@ new $xgplayer({ url: 偏移URL, isLive: false, plugins: [HLS] })
 #### A. 直播 + 回放（完整版，v0.13）
 
 1. 用 Edge / Chrome 打开 https://live.kankanews.com/huikan?id=10
-2. **等直播画面出现**（等几秒）
+2. 等页面加载完成（几秒）
 3. 按 **F12** → **Console** 标签 → 粘贴以下代码 → 回车：
 
 ```js
@@ -123,18 +123,35 @@ new $xgplayer({ url: 偏移URL, isLive: false, plugins: [HLS] })
     var v=document.querySelector('.huikan').__vue__;
     if(!v){console.error('[SMGTV] 未找到Vue组件');return}
 
-    // ===== 1. 获取直播流URL =====
-    var liveUrl=v.player&&v.player.config&&v.player.config.url;
-    if(!liveUrl){console.error('[SMGTV] 播放器未启动，请等直播加载后再粘贴');return}
+    // ===== 1. 修补版权字段 =====
+    function fix(o){if(!o)return;o.is_shield=0;o.is_review=1;o.can_review=1}
+    fix(v.programObj);fix(v.programDetail);fix(v.playingProgramObj);
+    if(Array.isArray(v.programList))v.programList.forEach(fix);
+    if(Array.isArray(v.currentProgramList))v.currentProgramList.forEach(fix);
+    if(v.currChannelDetail){v.currChannelDetail.copyright_image=''}
+    if(v.currChannel){v.currChannel.copyright_image=''}
+    if(v.currChannelDetail&&v.currChannelDetail.live_address){
+        v.programDetail=v.programDetail||{};
+        v.programDetail.channel_info=v.programDetail.channel_info||{};
+        v.programDetail.channel_info.live_address=v.currChannelDetail.live_address;
+    }
+    v.isCopyright=false;
+    var m=document.querySelector('.image-mask');if(m)m.style.display='none';
+    v.$forceUpdate();
 
-    // ===== 2. 提取token参数 =====
+    // ===== 2. 启动直播播放器 =====
+    if(!v.player){try{v.initPlayer();}catch(e){}}
+
+    // ===== 3. 获取直播流URL并提取token =====
+    var liveUrl=v.player&&v.player.config&&v.player.config.url;
+    if(!liveUrl){console.error('[SMGTV] 播放器未启动，请等直播加载后再试');return}
     var u=new URL(liveUrl);
     var token=u.searchParams.get('token');
     var volcSecret=u.searchParams.get('volcSecret');
     var volcTime=u.searchParams.get('volcTime');
     var stream=u.pathname.match(/\/live\/([^/]+)\//)[1];
 
-    // ===== 3. 构建偏移URL的函数 =====
+    // ===== 4. 构建偏移URL的函数 =====
     function makeShift(ts){
         return 'https://volc-stream.kksmg.com/live/'+stream
             +'/index.m3u8?token='+token
@@ -142,26 +159,16 @@ new $xgplayer({ url: 偏移URL, isLive: false, plugins: [HLS] })
             +'&volcTime='+volcTime
             +'&startTime='+ts;
     }
-    window.makeShift=makeShift; // 暴露到全局，方便手动使用
+    window.makeShift=makeShift;
 
-    // ===== 4. 修补版权字段 =====
-    function fix(o){if(!o)return;o.is_shield=0;o.is_review=1;o.can_review=1}
-    fix(v.programObj);fix(v.programDetail);fix(v.playingProgramObj);
-    if(Array.isArray(v.programList))v.programList.forEach(fix);
-    if(Array.isArray(v.currentProgramList))v.currentProgramList.forEach(fix);
-    if(v.currChannelDetail){v.currChannelDetail.copyright_image=''}
-    if(v.currChannel){v.currChannel.copyright_image=''}
-    v.isCopyright=true;
-
-    // ===== 5. 绕过initPlayer，直接创建播放器 =====
+    // ===== 5. 绕过initPlayer，直接创建回放播放器 =====
     var origInit=v.initPlayer;
     v.initPlayer=function(){
         var p=v.programObj;
         if(p&&p.play===0&&p.start_time){
             try{
                 var url=makeShift(p.start_time);
-                console.log('[SMGTV] [回放] 正在播放:',p.name,
-                    '时间戳:',p.start_time);
+                console.log('[SMGTV] [回放] 正在播放:',p.name,'时间戳:',p.start_time);
                 v.destroyPlayer();
                 var vol=Number(localStorage.getItem('playerVolume'))||0.5;
                 v.player=new v.$xgplayer({
