@@ -19,6 +19,7 @@
 - [方式二：Tampermonkey 脚本](#方式二tampermonkey-脚本)
 - [方式三：PowerShell 自动化脚本](#方式三powershell-自动化脚本)
 - [兼容性](#兼容性)
+- [已知问题与解决方案](#已知问题与解决方案)
 - [License](#license)
 
 ---
@@ -333,9 +334,116 @@ player.html
 | Edge / Chrome 最新版 | ✅ | ✅ | 推荐 |
 | Tampermonkey / Violentmonkey | ✅ | ✅ | 脚本方式 |
 | Firefox | ⚠️ | ⚠️ | 理论兼容，未充分测试 |
-| Safari | ⚠️ | ⚠️ | Stay 插件兼容，未充分测试 |
+| Safari (Stay) | ⚠️ | ⚠️ | 需开启"请求桌面网站"（见下方） |
+| iOS Safari (Stay) | ⚠️ | ⚠️ | 必须开启"请求桌面网站"，否则重定向到手机版 404 |
 | 移动端 Android | ✅ | ✅ | Kiwi Browser 等支持 Tampermonkey 的浏览器 |
 | PowerShell (run.bat) | ✅ | ❌ | 暂不支持回放 |
+
+---
+
+## 已知问题与解决方案
+
+### 1. 🔴 iOS Safari / Stay：必须开启"请求桌面网站"
+
+**现象：** 访问 `live.kankanews.com/huikan?id=10` 后被自动跳转到 `m.kankanews.com/huikan/10`，页面 404 或版权提示仍在。
+
+**原因：** 看看新闻服务器检测到手机 User-Agent 后，强制将用户从 `live.kankanews.com`（桌面版）跳转到 `m.kankanews.com`（手机版）。手机版使用完全不同的前端框架，没有脚本依赖的 Vue 组件（`.huikan`、`HuikanIndex`），因此脚本无法工作。
+
+**解决方案（任选其一）：**
+
+- **推荐：** Safari 地址栏输入网址前，长按地址栏 → 点 `aA` → **"请求桌面网站"**
+- **一劳永逸：** iPhone 设置 → Safari → 请求桌面网站 → 把 `kankanews.com` 加入白名单
+- 这样服务器就不会跳到手机版，脚本正常工作
+
+> ⚠️ 脚本内的 `replaceState` 修复只能改 URL 不刷新页面，但手机版页面本身没有正确的 Vue 组件，所以光改 URL 不够——必须用桌面版。
+
+---
+
+### 2. 🔴 Stay（iOS 脚本管理器）无法识别 @match
+
+**现象：** Stay 显示脚本标题乱码（如 `收看 SMGTV 电视节目";"//@namespace...`），提示"以下的脚本由于没有与当前页面匹配将不会运行"。
+
+**原因：** 脚本头中使用了 `@compatible safari` / `@compatible stay` 这两个非标准头部，Stay 的解析器无法识别，导致整个 UserScript 元数据块解析失败，`@match`、`@run-at` 等全部丢失。
+
+**解决方案：** 已在 v0.14 中移除 `@compatible` 头部。如果仍有问题，在 Stay 中删除脚本后重新导入。
+
+---
+
+### 3. 🔴 无限重定向循环（手机端疯狂抽搐）
+
+**现象：** 在手机上访问页面后，页面在 `m.kankanews.com` 和 `live.kankanews.com` 之间疯狂跳转闪烁。
+
+**原因：** 脚本检测到 `m.kankanews.com` 后用 `location.replace()` 跳回 `live.kankanews.com`，但服务器又把手机 UA 跳回 `m.kankanews.com`，形成死循环。
+
+**解决方案：** 已在 v0.15 中改用 `history.replaceState()` 就地修复 URL，不触发页面导航，彻底避免循环。配合方案 1（请求桌面网站）效果最佳。
+
+---
+
+### 4. 🟡 版权遮罩图 `.image-mask` 无法隐藏
+
+**现象：** CSS `display:none` 没有效果，遮罩图仍然显示。
+
+**原因：** 网站可能在后续更新中修改了遮罩图的 class 名（如 `.copyright-mask`、`.video-overlay` 等）。
+
+**解决方案：** 打开浏览器 DevTools → Elements → 搜索 `copyright` 或 `shield`，找到新的 class 名，在脚本的 CSS 注入部分加上对应的 `display:none!important`。
+
+---
+
+### 5. 🟡 `initPlayer()` 报错 "Cannot read property of undefined"
+
+**现象：** 控制台报错，播放器无法启动。
+
+**原因：** 脚本运行时 Vue 组件尚未完全初始化（`programObj` 或 `channel_info` 还是空的），或 `live_address` 为空（服务端未返回）。
+
+**解决方案：**
+- 等页面完全加载后再运行脚本（看控制台是否有 `[SMGTV] Vue found` 日志）
+- 如果是 Console 方式，确认先执行了版权修复代码，再调用 `initPlayer()`
+- 如果是 Tampermonkey 方式，脚本会自动重试（最多 30 次）
+
+---
+
+### 6. 🟡 Tampermonkey 脚本不生效
+
+**现象：** 脚本已安装并启用，但页面没有任何变化。
+
+**排查步骤：**
+1. 点击 Tampermonkey 图标 → 确认脚本开关是**打开**的
+2. 点击脚本名称 → 确认没有被**当前站点禁用**
+3. 按 F12 → Console → 看是否有 `[SMGTV]` 开头的日志
+4. 如果没有任何 `[SMGTV]` 日志，检查 `@match` 是否匹配当前 URL
+
+---
+
+### 7. 🟡 回放偏移流加载慢或无画面
+
+**现象：** 点击回放节目后，播放器转圈但没有画面。
+
+**原因：** volc-stream CDN 的偏移流需要一定时间生成，如果 `startTime` 距离当前时间太久远（如超过 12 小时），CDN 可能不支持。
+
+**解决方案：**
+- 回放功能支持最近 **5 分钟 ~ 12 小时** 内的节目
+- 如果是 F1 等时效性很强的节目，建议在赛后尽快回看
+- 超过 12 小时的节目建议通过看看新闻 App 的"往期回看"功能
+
+---
+
+### 8. 🟡 E.a RSA 解密导致空 URL
+
+**现象：** 控制台日志显示 `live_address` 解密后变为空字符串。
+
+**原因：** `live_address` 有两种格式：加密的（需要 RSA 解密）和明文的（已经是完整 URL）。`patchModule560()` 中的 monkey-patch 对明文 URL 会返回空字符串。
+
+**解决方案：** v0.13+ 的回放功能已绕过此问题——对于过去的节目（`play===0`），不再依赖 `initPlayer()` 的解密流程，而是直接从直播播放器提取 token，构建偏移 URL。
+
+---
+
+### 9. 🟡 Stay 注入方式问题
+
+**现象：** 脚本运行了但找不到 Vue 对象，控制台没有 `[SMGTV] Vue found` 日志。
+
+**原因：** Stay 默认使用 Content Script 注入方式，脚本运行在隔离的上下文中，无法访问页面的 `__vue__` 对象。
+
+**解决方案：** Stay 脚本设置 → 注入方式 → 改为 **Page**（非 Auto / Content）。
 
 ---
 
