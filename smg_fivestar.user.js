@@ -21,22 +21,19 @@
     console.log("[SMGTV] ========== v0.14 ==========");
     console.log("[SMGTV] URL:", location.href);
 
-    // ===== 0. Mobile: redirect to desktop site =====
-    // Server-side redirect from m. → live. often corrupts URL (?id=10 → /10 → 404).
-    // So we do the redirect ourselves with the correct URL format.
+    // ===== 0. Mobile handling =====
+    // The server detects mobile UA and redirects live.kankanews.com → m.kankanews.com,
+    // but corrupts the URL: /huikan?id=10 → /huikan/10 (404).
+    // We can't redirect back without causing an infinite loop (server → m → live → server → ...).
+    // Solution: use history.replaceState to fix the URL in-place, then continue.
     if (location.hostname === "m.kankanews.com") {
-        var target = "https://live.kankanews.com" + location.pathname + location.search;
-        console.log("[SMGTV] Mobile site detected, redirecting to:", target);
-        location.replace(target);
-        return;
-    }
-    // Fix broken redirect: live.kankanews.com/huikan/10 → /huikan?id=10
-    var brokenPath = location.pathname.match(/^\/huikan\/(\d+)$/);
-    if (brokenPath) {
-        var fixed = location.origin + "/huikan?id=" + brokenPath[1];
-        console.log("[SMGTV] Fixing broken URL:", location.href, "→", fixed);
-        location.replace(fixed);
-        return;
+        // Fix /huikan/10 → /huikan?id=10 in-place (no page reload)
+        var m = location.pathname.match(/^\/huikan\/(\d+)$/);
+        if (m) {
+            var fixed = "/huikan?id=" + m[1];
+            history.replaceState(null, "", fixed);
+            console.log("[SMGTV] Fixed broken mobile URL in-place:", fixed);
+        }
     }
     console.log("[SMGTV] UA:", navigator.userAgent);
 
