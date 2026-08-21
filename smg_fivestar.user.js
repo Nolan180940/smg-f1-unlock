@@ -1,21 +1,24 @@
 // ==UserScript==
 // @name             收看SMGTV电视节目
 // @namespace        http://tampermonkey.net/
-// @version          0.10
-// @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制（2026-08-21 适配 isCopyright 开关 + live_address 服务端清空）
+// @version          0.11
+// @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制（Safari/Stay 兼容 + 多路径 Vue 探测）
 // @author           https://github.com/Nolan180940
 // @match            *://*.kankanews.com/*
 // @include          *://live.kankanews.com/*
 // @icon             https://live.kankanews.com/favicon.ico
 // @grant            none
-// @run-at           document-end
+// @run-at           document-body
+// @compatible       safari
+// @compatible       stay
 // ==/UserScript==
 
 (function() {
     "use strict";
 
-    console.log("[SMGTV] ========== v0.10 ==========");
+    console.log("[SMGTV] ========== v0.11 ==========");
     console.log("[SMGTV] URL:", location.href);
+    console.log("[SMGTV] UA:", navigator.userAgent);
 
     // ===== 1. CSS: hide copyright mask =====
     var style = document.createElement("style");
@@ -58,11 +61,63 @@
     console.log("[SMGTV] API interceptors ready");
 
     // ===== 3. Patch Vue component =====
-    function tryPatch() {
+
+    // Helper: traverse Vue 2 $children tree to find component by name
+    function findComponent(root, name) {
+        if (!root) return null;
+        if (root.$options && root.$options.name === name) return root;
+        for (var i = 0; root.$children && i < root.$children.length; i++) {
+            var found = findComponent(root.$children[i], name);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    // Helper: find HuikanIndex via multiple paths (Safari/Stay compatibility)
+    function findVue() {
+        // Path 1: Direct access via .huikan element (Tampermonkey standard)
         var el = document.querySelector(".huikan");
-        if (!el) return false;
-        var vue = el.__vue__;
-        if (!vue || typeof vue.initPlayer !== "function") return false;
+        if (el && el.__vue__ && typeof el.__vue__.initPlayer === "function") {
+            console.log("[SMGTV] Vue found via .huikan.__vue__");
+            return el.__vue__;
+        }
+
+        // Path 2: From #__nuxt root, traverse $children (works in CDP/Puppeteer/Stay)
+        var root = document.querySelector("#__nuxt");
+        if (root && root.__vue__) {
+            var comp = findComponent(root.__vue__, "HuikanIndex");
+            if (comp && typeof comp.initPlayer === "function") {
+                console.log("[SMGTV] Vue found via #__nuxt traversal");
+                return comp;
+            }
+        }
+
+        // Path 3: Walk all elements looking for __vue__ with initPlayer (brute force)
+        var all = document.querySelectorAll("[class*=huikan], [id*=huikan], .live-player, .video-wrap");
+        for (var i = 0; i < all.length; i++) {
+            var v = all[i].__vue__;
+            if (v && typeof v.initPlayer === "function") {
+                console.log("[SMGTV] Vue found via element scan");
+                return v;
+            }
+        }
+
+        // Path 4: Check all top-level __vue__ instances on any element
+        var any = document.querySelectorAll("*");
+        for (var j = 0; j < any.length && j < 500; j++) {
+            var vw = any[j].__vue__;
+            if (vw && vw.$options && vw.$options.name === "HuikanIndex") {
+                console.log("[SMGTV] Vue found via global element scan");
+                return vw;
+            }
+        }
+
+        return null;
+    }
+
+    function tryPatch() {
+        var vue = findVue();
+        if (!vue) return false;
 
         console.log("[SMGTV] Vue component found, patching...");
 
@@ -122,6 +177,7 @@
         return true;
     }
 
+    // --- Initial patch with enhanced retry (60s for Safari/Stay) ---
     if (tryPatch()) {
         console.log("[SMGTV] Patched immediately");
     } else {
@@ -138,17 +194,27 @@
                 clearInterval(timer);
                 observer.disconnect();
                 console.log("[SMGTV] Patched after " + count + " polls");
-            } else if (count >= 60) {
+            } else if (count >= 120) {
                 clearInterval(timer);
-                console.warn("[SMGTV] Timeout after 30s");
+                observer.disconnect();
+                console.warn("[SMGTV] Timeout after 60s — check Console [SMGTV] logs for diagnostics");
             }
         }, 500);
     }
 
-    // ===== 4. Keep image-mask hidden =====
+    // ===== 4. SPA route change: re-patch when user switches channels =====
+    var lastHref = location.href;
     setInterval(function() {
+        // Re-hide mask
         var mask = document.querySelector(".image-mask");
         if (mask && mask.style.display !== "none") mask.style.display = "none";
-    }, 200);
+
+        // Detect SPA navigation
+        if (location.href !== lastHref) {
+            lastHref = location.href;
+            console.log("[SMGTV] Route changed, re-patching in 2s...");
+            setTimeout(tryPatch, 2000);
+        }
+    }, 1000);
 
 })();
