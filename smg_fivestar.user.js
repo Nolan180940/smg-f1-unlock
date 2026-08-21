@@ -21,12 +21,14 @@
     console.log("[SMGTV] ========== v0.14 ==========");
     console.log("[SMGTV] URL:", location.href);
 
-    // ===== 0. Mobile redirect: m.kankanews.com → live.kankanews.com =====
+    // ===== 0. Mobile: redirect to desktop site =====
+    // Server-side redirect from m. → live. often corrupts URL (?id=10 → /10 → 404).
+    // So we do the redirect ourselves with the correct URL format.
     if (location.hostname === "m.kankanews.com") {
-        var target = location.href.replace("m.kankanews.com", "live.kankanews.com");
+        var target = "https://live.kankanews.com" + location.pathname + location.search;
         console.log("[SMGTV] Mobile site detected, redirecting to:", target);
         location.replace(target);
-        return; // stop script, the redirect will re-trigger it
+        return;
     }
     console.log("[SMGTV] UA:", navigator.userAgent);
 
