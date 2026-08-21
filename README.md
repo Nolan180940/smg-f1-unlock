@@ -1,4 +1,4 @@
-# 收看五星体育 / SMG 电视频道（绕过版权限制）
+# 收看五星体育 / SMG 电视频道（绕过版权限制 + 回放）
 
 打开 [看看新闻](https://live.kankanews.com/huikan?id=10) 看五星体育等 SMG 频道时，F1 等版权节目会显示：
 
@@ -6,7 +6,20 @@
 
 这是因为服务端返回的节目数据中 `is_shield=1`，且频道带有 `copyright_image` 版权遮罩图，前端据此拦截播放。
 
-本项目提供**三种方式**绕过这个限制。
+本项目提供**绕过版权限制**和**节目回放**两种能力。
+
+---
+
+## 目录
+
+- [为什么看不了？](#为什么看不了)
+- [绕过原理（直播）](#绕过原理直播)
+- [回放原理](#回放原理v013)
+- [方式一：Console 粘贴（推荐）](#方式一console-粘贴推荐)
+- [方式二：Tampermonkey 脚本](#方式二tampermonkey-脚本)
+- [方式三：PowerShell 自动化脚本](#方式三powershell-自动化脚本)
+- [兼容性](#兼容性)
+- [License](#license)
 
 ---
 
@@ -23,25 +36,200 @@
 
 前端 Vue 组件检测到 `is_shield=1` 后，不初始化播放器，而是在 `.live-player` 上面覆盖一层 `.image-mask`（版权提示图）。
 
-## 绕过原理
+## 绕过原理（直播）
 
 1. **隐藏 `.image-mask`** — 把版权遮罩图藏掉
 2. **修改 Vue 组件数据** — 把 `is_shield` 改成 `0`，`is_review` / `can_review` 改成 `1`，清空 `copyright_image`
-3. **绕过 `isCopyright` 开关**（2026-08 新增）— 网站在 Vue 组件上加了 `isCopyright` 标志，为真时 `initPlayer()` 会直接销毁播放器，必须设为 `false`
-4. **恢复流地址**（2026-08 新增）— 服务端不再把 `live_address` 放进节目详情接口，需要从频道接口复制回来
+3. **绕过 `isCopyright` 开关** — 网站在 Vue 组件上加了 `isCopyright` 计算属性，为真时 `initPlayer()` 才会创建播放器
+4. **恢复流地址** — 服务端不再把 `live_address` 放进节目详情接口，需要从频道接口复制回来
 5. **手动调用 `initPlayer()`** — 触发播放器初始化，解密 `live_address` 并加载 HLS 视频流
 
-五步做完，xgplayer 播放器正常加载，HLS 流开始播放。
+---
+
+## 回放原理 (v0.13)
+
+### 发现：CDN 支持时间偏移
+
+看看新闻的直播 CDN（字节跳动 volc-stream）**支持时间偏移**，只是前端没有用。
+
+正常的直播流 URL：
+```
+https://volc-stream.kksmg.com/live/dfws4k/index.m3u8?token=eyJ...&volcSecret=...&volcTime=...
+```
+
+只需在后面加一个 `&startTime=1787330880`（Unix 时间戳），CDN 就返回**那个时间点**的 HLS 流：
+
+```
+https://volc-stream.kksmg.com/live/dfws4k/index.m3u8?token=eyJ...&volcSecret=...&volcTime=...&startTime=1787330880
+```
+
+| 测试时间范围 | 结果 |
+|-------------|------|
+| 5 分钟前 | ✅ 有效 |
+| 1 小时前 | ✅ 有效 |
+| 6 小时前 | ✅ 有效 |
+| 12 小时前 | ✅ 有效（测试上限） |
+
+偏移流的 manifest 特征：
+- `#EXT-X-VERSION:6`（正常流为 `#EXT-X-VERSION:3`）
+- 每个分段 ~10 秒，manifest 返回 3 个分段（~30 秒）
+- HLS.js 自动轮询 manifest 获取后续分段，连续播放
+- 分段名格式：`10000-{timestamp}-{x}-{seq}.ts?shift=true&sign=false`
+
+### 难点：为什么不能直接用 `initPlayer`？
+
+网站的 `initPlayer` 内部有这行代码：
+
+```js
+_ = Object(E.a)(y)   // E.a = webpack 模块 560，RSA 解密函数（JSEncrypt）
+```
+
+- 对加密的 `live_address`（Base64 密文）→ 正确解密为完整 URL ✅
+- 对我们的明文 shift URL → **解密失败，返回空字符串** ❌
+
+播放器拿到空 URL 就不播了。
+
+### 解决方案
+
+**绕过 `initPlayer`，直接用 `new $xgplayer()` 创建播放器**：
+
+```
+用户点击回放节目
+    ↓
+从现有直播播放器获取已解密的 URL（含 token、volcSecret、volcTime）
+    ↓
+拼接 &startTime={节目的 start_time} 构建偏移 URL
+    ↓
+new $xgplayer({ url: 偏移URL, isLive: false, plugins: [HLS] })
+    ↓
+播放器加载偏移流 → 回放开始
+```
 
 ---
 
 ## 快速开始
 
-### 方式一：Console 粘贴（最简单，每次刷新后要重新粘贴，20260821更新可用，强烈推荐）
+### 方式一：Console 粘贴（推荐）
+
+#### A. 直播 + 回放（完整版，v0.13）
 
 1. 用 Edge / Chrome 打开 https://live.kankanews.com/huikan?id=10
-2. 按 **F12** → 点 **Console** 标签
-3. 粘贴以下代码，回车：
+2. **等直播画面出现**（等几秒）
+3. 按 **F12** → **Console** 标签 → 粘贴以下代码 → 回车：
+
+```js
+// SMGTV 直播 + 回放 — Console 版 (v0.13)
+(function(){
+    var v=document.querySelector('.huikan').__vue__;
+    if(!v){console.error('[SMGTV] 未找到Vue组件');return}
+
+    // ===== 1. 获取直播流URL =====
+    var liveUrl=v.player&&v.player.config&&v.player.config.url;
+    if(!liveUrl){console.error('[SMGTV] 播放器未启动，请等直播加载后再粘贴');return}
+
+    // ===== 2. 提取token参数 =====
+    var u=new URL(liveUrl);
+    var token=u.searchParams.get('token');
+    var volcSecret=u.searchParams.get('volcSecret');
+    var volcTime=u.searchParams.get('volcTime');
+    var stream=u.pathname.match(/\/live\/([^/]+)\//)[1];
+
+    // ===== 3. 构建偏移URL的函数 =====
+    function makeShift(ts){
+        return 'https://volc-stream.kksmg.com/live/'+stream
+            +'/index.m3u8?token='+token
+            +'&volcSecret='+volcSecret
+            +'&volcTime='+volcTime
+            +'&startTime='+ts;
+    }
+    window.makeShift=makeShift; // 暴露到全局，方便手动使用
+
+    // ===== 4. 修补版权字段 =====
+    function fix(o){if(!o)return;o.is_shield=0;o.is_review=1;o.can_review=1}
+    fix(v.programObj);fix(v.programDetail);fix(v.playingProgramObj);
+    if(Array.isArray(v.programList))v.programList.forEach(fix);
+    if(Array.isArray(v.currentProgramList))v.currentProgramList.forEach(fix);
+    if(v.currChannelDetail){v.currChannelDetail.copyright_image=''}
+    if(v.currChannel){v.currChannel.copyright_image=''}
+    v.isCopyright=true;
+
+    // ===== 5. 绕过initPlayer，直接创建播放器 =====
+    var origInit=v.initPlayer;
+    v.initPlayer=function(){
+        var p=v.programObj;
+        if(p&&p.play===0&&p.start_time){
+            try{
+                var url=makeShift(p.start_time);
+                console.log('[SMGTV] [回放] 正在播放:',p.name,
+                    '时间戳:',p.start_time);
+                v.destroyPlayer();
+                var vol=Number(localStorage.getItem('playerVolume'))||0.5;
+                v.player=new v.$xgplayer({
+                    el:v.$refs.livePlayer,
+                    url:url,
+                    isLive:false,
+                    fluid:true,
+                    crossOrigin:true,
+                    controls:true,
+                    volume:vol,
+                    playbackRate:[2,1.5,1.25,1,.75,.5],
+                    ignores:['cssFullscreen'],
+                    keyShortcut:true,
+                    lang:'zh-cn',
+                    closeVideoClick:true,
+                    plugins:[v.$hlsPlayer]
+                });
+                v.player.muted=v.isMuted;
+                v.player.on('canplay',function(){v.isLoading=false});
+                v.player.on('ended',function(){
+                    if(v.programObj.play===0&&v.playNextProgram)v.playNextProgram()
+                });
+                setTimeout(function(){v.player.play()},200);
+                return;
+            }catch(e){console.error('[SMGTV] [回放] 失败:',e)}
+        }
+        return origInit.apply(this,arguments);
+    };
+
+    console.log('[SMGTV] ✅ 已就绪！直播正常播放中');
+    console.log('[SMGTV] 👉 点击左侧节目列表中的历史节目即可回放');
+    console.log('[SMGTV] 👉 或在Console输入 makeShift(时间戳) 获取回放URL');
+})();
+```
+
+4. 看到 `✅ 已就绪` 后，**点击左侧节目列表里的任意回放节目**即可观看。
+
+> ⚠️ 刷新页面后需要重新粘贴。切换频道不受影响。
+
+#### 手动指定时间点
+
+粘贴上面的代码后，可以在 Console 输入：
+
+```js
+// 看1小时前的内容
+v.destroyPlayer();
+v.player=new v.$xgplayer({
+    el:v.$refs.livePlayer,
+    url:makeShift(Date.now()/1000-3600),
+    isLive:false,fluid:true,
+    plugins:[v.$hlsPlayer]
+});
+v.player.play();
+
+// 看30分钟前
+// makeShift(Date.now()/1000 - 1800)
+
+// 看6小时前
+// makeShift(Date.now()/1000 - 21600)
+```
+
+`makeShift(时间戳)` 也会返回完整的回放 URL，可以复制到其他播放器使用。
+
+---
+
+#### B. 仅直播（精简版，不含回放）
+
+如果只需要绕过版权限制看直播，不需要回放，用这段更短的代码：
 
 ```js
 var v=document.querySelector('.huikan').__vue__;
@@ -58,17 +246,9 @@ v.$forceUpdate();
 try{v.initPlayer();}catch(e){}
 ```
 
-4. 播放器出现，开始观看。
-
-> ⚠️ 刷新页面后需要重新粘贴。切换频道不受影响。
->
-> 📅 **2026-08-21 更新说明**：网站加了两个新拦截：
-> 1. Vue 组件新增 `isCopyright` 标志，为真时 `initPlayer()` 会直接销毁播放器 → 需要设 `v.isCopyright=false`
-> 2. 服务端把 `/program/detail` 接口的 `live_address` 清空了 → 需要从频道接口复制：`v.programDetail.channel_info.live_address = v.currChannelDetail.live_address`
-
 ---
 
-### 方式二：Tampermonkey 脚本（自动运行，理论上可行，但我用不了，这里力荐方式一）
+### 方式二：Tampermonkey 脚本
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 浏览器插件
 2. 点击 Tampermonkey 图标 → **创建新脚本**
@@ -77,14 +257,23 @@ try{v.initPlayer();}catch(e){}
 5. 打开 https://live.kankanews.com/huikan?id=10 即可自动生效
 
 脚本会自动：
-- 注入 CSS 隐藏 `.image-mask`
-- 拦截 XHR / fetch API，修改版权字段
-- 找到 Vue 组件打补丁，初始化播放器
-- 拦截试看倒计时、标签页切换暂停等
+- ✅ 绕过版权限制（`is_shield` / `is_review` / `copyright_image`）
+- ✅ 恢复流地址 + 绕过 `isCopyright` 开关
+- ✅ 初始化直播播放器
+- ✅ **点击回放节目自动切换到回放流**（v0.13 新增）
+- ✅ 拦截试看倒计时、标签页切换暂停
+- ✅ SPA 路由切换自动重新打补丁
+- ✅ Safari / Stay 兼容
+
+> 脚本 v0.13 已内置回放支持，点击左侧任何历史节目即可回放。
+>
+> ⚠️ 目前 `run.bat`（PowerShell 方式）暂不支持回放，Console 和 Tampermonkey 均可用。
 
 ---
 
-### 方式三：PowerShell 自动化脚本（全自动，无需浏览器插件，强烈推荐，可以开干净的直播窗口全屏看）
+### 方式三：PowerShell 自动化脚本
+
+> ⚠️ 此方式**暂不支持回放**，仅支持直播。回放请使用 Console 或 Tampermonkey。
 
 双击 `run.bat`，脚本会自动：
 1. 打开 Edge 浏览器并启动远程调试端口
@@ -130,11 +319,16 @@ player.html
 
 ---
 
-- ✅ **Edge** / **Chrome** 最新版
-- ✅ **Tampermonkey** / **Violentmonkey**
-- ⚠️ Firefox 理论兼容，未充分测试
-- ❌ Safari 未测试
-- 📱 移动端：Android 上安装支持 Tampermonkey 的浏览器（如 Kiwi Browser），同样可用
+## 兼容性
+
+| 浏览器 | 直播 | 回放 | 备注 |
+|--------|------|------|------|
+| Edge / Chrome 最新版 | ✅ | ✅ | 推荐 |
+| Tampermonkey / Violentmonkey | ✅ | ✅ | 脚本方式 |
+| Firefox | ⚠️ | ⚠️ | 理论兼容，未充分测试 |
+| Safari | ⚠️ | ⚠️ | Stay 插件兼容，未充分测试 |
+| 移动端 Android | ✅ | ✅ | Kiwi Browser 等支持 Tampermonkey 的浏览器 |
+| PowerShell (run.bat) | ✅ | ❌ | 暂不支持回放 |
 
 ---
 
