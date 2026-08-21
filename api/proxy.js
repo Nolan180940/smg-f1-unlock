@@ -29,7 +29,13 @@ async function handleStream(req, res) {
 async function handleTs(req, res, url) {
   const tsUrl = url.searchParams.get('url')
   if (!tsUrl) return res.status(400).json({ error: 'Missing url' })
+
+  // SSRF protection: only allow known SMG/Volc CDN domains
+  const ALLOWED = ['volc-stream.kksmg.com', 'kksmg.com']
   try {
+    const u = new URL(tsUrl)
+    const ok = ALLOWED.some(d => u.hostname === d || u.hostname.endsWith('.' + d))
+    if (!ok) return res.status(403).json({ error: 'Domain not allowed: ' + u.hostname })
     const r = await fetch(tsUrl, {
       headers: { 'User-Agent': 'Mozilla/5.0 Windows', 'Referer': 'https://www.kankanews.com/' }
     })

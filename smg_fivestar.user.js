@@ -14,7 +14,7 @@
 (function() {
     "use strict";
 
-    console.log("[SMGTV] ========== v0.9 ==========");
+    console.log("[SMGTV] ========== v0.10 ==========");
     console.log("[SMGTV] URL:", location.href);
 
     // ===== 1. CSS: hide copyright mask =====
@@ -25,7 +25,7 @@
 
     // ===== 2. Intercept API responses =====
 
-    // --- XHR ---
+    // --- XHR: re-patch Vue after API responses (can't reliably modify XHR response in-flight) ---
     var origOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function(method, url) {
         var urlStr = String(url);
@@ -33,66 +33,23 @@
             var xhr = this;
             xhr.addEventListener("readystatechange", function() {
                 if (xhr.readyState === 4 && xhr.status === 200) {
-                    try {
-                        var data = JSON.parse(xhr.responseText);
-                        var changed = false;
-                        function fp(p) {
-                            if (!p) return;
-                            if (p.is_shield !== undefined) { p.is_shield = 0; changed = true; }
-                            if (p.is_review !== undefined) { p.is_review = 1; changed = true; }
-                            if (p.can_review !== undefined) { p.can_review = 1; changed = true; }
-                        }
-                        if (data.result) {
-                            fp(data.result);
-                            if (data.result.programs) data.result.programs.forEach(fp);
-                            if (data.result.channel_info) {
-                                data.result.channel_info.copyright_image = "";
-                                changed = true;
-                            }
-                        }
-                        if (changed) {
-                            console.log("[SMGTV] XHR patched");
-                            Object.defineProperty(xhr, "responseText", {
-                                value: JSON.stringify(data), writable: false
-                            });
-                        }
-                    } catch(e) {}
+                    console.log("[SMGTV] XHR response received, re-patching Vue...");
+                    setTimeout(tryPatch, 50);
                 }
             });
         }
         return origOpen.apply(this, arguments);
     };
 
-    // --- fetch ---
+    // --- fetch: re-patch Vue after API responses ---
     var origFetch = window.fetch;
     window.fetch = function(input, init) {
         var urlStr = typeof input === "string" ? input : (input && input.url) || "";
         if (urlStr.indexOf("/content/pc/tv/") !== -1) {
             return origFetch.apply(this, arguments).then(function(resp) {
-                return resp.clone().json().then(function(data) {
-                    var changed = false;
-                    function fp(p) {
-                        if (!p) return;
-                        if (p.is_shield !== undefined) { p.is_shield = 0; changed = true; }
-                        if (p.is_review !== undefined) { p.is_review = 1; changed = true; }
-                        if (p.can_review !== undefined) { p.can_review = 1; changed = true; }
-                    }
-                    if (data.result) {
-                        fp(data.result);
-                        if (data.result.programs) data.result.programs.forEach(fp);
-                        if (data.result.channel_info) {
-                            data.result.channel_info.copyright_image = "";
-                            changed = true;
-                        }
-                    }
-                    if (changed) {
-                        console.log("[SMGTV] fetch patched");
-                        return new Response(JSON.stringify(data), {
-                            status: resp.status, statusText: resp.statusText, headers: resp.headers
-                        });
-                    }
-                    return resp;
-                }).catch(function() { return resp; });
+                console.log("[SMGTV] fetch response received, re-patching Vue...");
+                setTimeout(tryPatch, 50);
+                return resp;
             });
         }
         return origFetch.apply(this, arguments);
@@ -159,6 +116,7 @@
             try { vue.initPlayer(); } catch(e) { console.error("[SMGTV] initPlayer error:", e); }
         }
 
+        vue.$forceUpdate();
         vue.__smgPatched = true;
         console.log("[SMGTV] Patch applied!");
         return true;

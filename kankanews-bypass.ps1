@@ -3,9 +3,11 @@ param([int]$IntervalMin = 35)
 $Browser = "msedge.exe"
 $Profile = "$env:TEMP\kks-profile"
 $Port = 19222
-$PlayerPath = Join-Path $PSScriptRoot "player.html"
+$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $ScriptDir) { $ScriptDir = $PWD.Path }
+$PlayerPath = Join-Path $ScriptDir "player.html"
 
-Write-Host "===== Kankanews Auto Stream Fetcher ====="
+Write-Host "===== Kankanews Auto Stream Fetcher v2 ====="
 Write-Host ""
 
 # Compile CDP helper
@@ -29,6 +31,40 @@ public class CDP {
 }
 "@ -ErrorAction Stop
 
+# Extracted bypass JS (used in both initial and refresh)
+$BypassJS = @'
+(function() {
+    var vue = document.querySelector("#__nuxt").__vue__;
+    if (!vue) return "NO_VUE";
+    function find(c, n) {
+        if (c.$options && c.$options.name === n) return c;
+        for (var i = 0; c.$children && i < c.$children.length; i++) {
+            var f = find(c.$children[i], n); if (f) return f;
+        }
+        return null;
+    }
+    var h = find(vue, "HuikanIndex");
+    if (!h || !h.programObj) return "NO_COMP";
+    function fix(o) { if (!o) return; o.is_shield = 0; o.is_review = 1; o.can_review = 1; }
+    fix(h.programObj);
+    fix(h.programDetail);
+    fix(h.playingProgramObj);
+    if (h.currChannelDetail) h.currChannelDetail.copyright_image = "";
+    if (h.currChannelDetail && h.currChannelDetail.live_address && h.programDetail) {
+        h.programDetail.channel_info = h.programDetail.channel_info || {};
+        if (!h.programDetail.channel_info.live_address) {
+            h.programDetail.channel_info.live_address = h.currChannelDetail.live_address;
+        }
+    }
+    h.isCopyright = false;
+    var mask = document.querySelector(".image-mask");
+    if (mask) mask.style.display = "none";
+    h.$forceUpdate();
+    setTimeout(function() { try { h.initPlayer(); } catch(e) {} }, 100);
+    return "OK";
+})()
+'@
+
 # Cleanup old debugging instance
 $old = Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%remote-debugging-port=$Port%'" -ErrorAction SilentlyContinue
 if ($old) { $old | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep 2 }
@@ -41,10 +77,19 @@ $p = Start-Process -FilePath $Browser -ArgumentList "--remote-debugging-port=$Po
 Start-Sleep 5
 
 # Connect to CDP
-$tabs = Invoke-RestMethod "http://localhost:$Port/json" -ErrorAction Stop
+try {
+    $tabs = Invoke-RestMethod "http://localhost:$Port/json" -ErrorAction Stop
+} catch {
+    Write-Host "  ERROR: Cannot connect to CDP port $Port. Is Edge/Chrome running with --remote-debugging-port?" -ForegroundColor Red
+    pause; exit 1
+}
 $tab = $tabs | Where-Object { $_.url -like "*huikan*" } | Select-Object -First 1
 if (-not $tab) { $tab = $tabs | Where-Object { $_.url -like "*kankanews*" -or $_.title -like "*新闻*" } | Select-Object -First 1 }
 if (-not $tab) { $tab = $tabs | Select-Object -First 1 }
+if (-not $tab) {
+    Write-Host "  ERROR: No browser tabs found" -ForegroundColor Red
+    pause; exit 1
+}
 $wsUrl = $tab.webSocketDebuggerUrl
 Write-Host "  Connected to: $($tab.title)"
 
@@ -56,7 +101,12 @@ $browserWsUrl = $ver.webSocketDebuggerUrl
 function EvalJS($id, $js) {
     $e = $js -replace '\\', '\\\\' -replace '"', '\"' -replace "`r`n", '\n' -replace "`r", '\n' -replace "`t", '\t'
     $json = "{`"id`":$id,`"method`":`"Runtime.evaluate`",`"params`":{`"expression`":`"$e`",`"awaitPromise`":true}}"
-    return [CDP]::Send($wsUrl, $json) | ConvertFrom-Json
+    try {
+        return [CDP]::Send($wsUrl, $json) | ConvertFrom-Json
+    } catch {
+        Write-Host "  CDP error: $($_.Exception.Message)" -ForegroundColor Yellow
+        return @{ result = @{ result = @{ value = "CDP_ERROR" } } }
+    }
 }
 
 # Helper: wait for m3u8 URL to appear
@@ -74,8 +124,7 @@ function WaitForM3u8() {
     return "";
 })()
 '@
-        $val = $r.result.result.value
-        if ($val) { return $val }
+        if ($r.result.result.value) { return $r.result.result.value }
     }
     return ''
 }
@@ -83,44 +132,17 @@ function WaitForM3u8() {
 # Bypass copyright shield
 Write-Host "[2] Bypassing copyright shield..."
 Start-Sleep 2
-$r = EvalJS 1 @'
-(function() {
-    var vue = document.querySelector("#__nuxt").__vue__;
-    if (!vue) return "NO_VUE";
-    function find(c, n) {
-        if (c.$options && c.$options.name === n) return c;
-        for (var i = 0; c.$children && i < c.$children.length; i++) {
-            var f = find(c.$children[i], n); if (f) return f;
-        }
-        return null;
-    }
-    var h = find(vue, "HuikanIndex");
-    if (!h || !h.programObj) return "NO_COMP";
-    // 2026-08: fix all shield flags
-    function fix(o) { if (!o) return; o.is_shield = 0; o.is_review = 1; o.can_review = 1; }
-    fix(h.programObj);
-    fix(h.programDetail);
-    fix(h.playingProgramObj);
-    // 2026-08: clear copyright image
-    if (h.currChannelDetail) h.currChannelDetail.copyright_image = "";
-    // 2026-08: restore live_address from channel detail (server removed it from program/detail API)
-    if (h.currChannelDetail && h.currChannelDetail.live_address && h.programDetail) {
-        h.programDetail.channel_info = h.programDetail.channel_info || {};
-        if (!h.programDetail.channel_info.live_address) {
-            h.programDetail.channel_info.live_address = h.currChannelDetail.live_address;
-        }
-    }
-    // 2026-08: bypass isCopyright gate (initPlayer destroys player when true)
-    h.isCopyright = false;
-    var mask = document.querySelector(".image-mask");
-    if (mask) mask.style.display = "none";
-    h.$forceUpdate();
-    setTimeout(function() { try { h.initPlayer(); } catch(e) {} }, 100);
-    return "OK";
-})()
-'@
+$r = EvalJS 1 $BypassJS
 $status = $r.result.result.value
 Write-Host "  $([string]$status)"
+
+if ($status -ne "OK") {
+    Write-Host "  WARNING: Bypass returned '$status', retrying in 3s..." -ForegroundColor Yellow
+    Start-Sleep 3
+    $r = EvalJS 2 $BypassJS
+    $status = $r.result.result.value
+    Write-Host "  Retry result: $([string]$status)"
+}
 
 # Get stream URL
 Write-Host "[3] Waiting for stream URL..."
@@ -137,9 +159,13 @@ if ($m3u8) {
     $playerFileUrl = "file:///$($PlayerPath.Replace('\','/'))#$enc"
 
     # Create player tab via CDP (same browser instance, controllable)
-    $playerResult = [CDP]::Send($browserWsUrl, "{`"id`":100,`"method`":`"Target.createTarget`",`"params`":{`"url`":`"$playerFileUrl`"}}") | ConvertFrom-Json
-    $playerTargetId = $playerResult.result.targetId
-    Write-Host "  Player opened (target: $playerTargetId). Close this window when done."
+    try {
+        $playerResult = [CDP]::Send($browserWsUrl, "{`"id`":100,`"method`":`"Target.createTarget`",`"params`":{`"url`":`"$playerFileUrl`"}}") | ConvertFrom-Json
+        $playerTargetId = $playerResult.result.targetId
+        Write-Host "  Player opened (target: $playerTargetId). Close this window when done."
+    } catch {
+        Write-Host "  ERROR: Failed to open player tab: $($_.Exception.Message)" -ForegroundColor Red
+    }
     Write-Host ""
 
     # Auto-refresh loop
@@ -148,38 +174,7 @@ if ($m3u8) {
         Write-Host "[refresh] Getting new stream URL..."
 
         # Re-bypass shield and init new HLS stream
-        $r = EvalJS 1 @'
-(function() {
-    var vue = document.querySelector("#__nuxt").__vue__;
-    if (!vue) return;
-    function find(c, n) {
-        if (c.$options && c.$options.name === n) return c;
-        for (var i = 0; c.$children && i < c.$children.length; i++) {
-            var f = find(c.$children[i], n); if (f) return f;
-        }
-        return null;
-    }
-    var h = find(vue, "HuikanIndex");
-    if (h && h.programObj) {
-        function fix(o) { if (!o) return; o.is_shield = 0; o.is_review = 1; o.can_review = 1; }
-        fix(h.programObj);
-        fix(h.programDetail);
-        fix(h.playingProgramObj);
-        if (h.currChannelDetail) h.currChannelDetail.copyright_image = "";
-        if (h.currChannelDetail && h.currChannelDetail.live_address && h.programDetail) {
-            h.programDetail.channel_info = h.programDetail.channel_info || {};
-            if (!h.programDetail.channel_info.live_address) {
-                h.programDetail.channel_info.live_address = h.currChannelDetail.live_address;
-            }
-        }
-        h.isCopyright = false;
-        var mask = document.querySelector(".image-mask");
-        if (mask) mask.style.display = "none";
-        h.$forceUpdate();
-        setTimeout(function() { try { h.initPlayer(); } catch(e) {} }, 200);
-    }
-})()
-'@
+        $r = EvalJS 1 $BypassJS
         Start-Sleep 5
         $newUrl = WaitForM3u8
         if ($newUrl -and $newUrl -ne $m3u8) {
@@ -188,17 +183,27 @@ if ($m3u8) {
             $newPlayerUrl = "file:///$($PlayerPath.Replace('\','/'))#$enc"
 
             # Close old player tab
-            [CDP]::Send($browserWsUrl, "{`"id`":200,`"method`":`"Target.closeTarget`",`"params`":{`"targetId`":`"$playerTargetId`"}}") >$null
-            Write-Host "  Closed old player tab"
+            try {
+                [CDP]::Send($browserWsUrl, "{`"id`":200,`"method`":`"Target.closeTarget`",`"params`":{`"targetId`":`"$playerTargetId`"}}") >$null
+                Write-Host "  Closed old player tab"
+            } catch {
+                Write-Host "  Warning: Could not close old tab" -ForegroundColor Yellow
+            }
 
             # Open new player tab with fresh token
             Start-Sleep 1
-            $playerResult = [CDP]::Send($browserWsUrl, "{`"id`":201,`"method`":`"Target.createTarget`",`"params`":{`"url`":`"$newPlayerUrl`"}}") | ConvertFrom-Json
-            $playerTargetId = $playerResult.result.targetId
-            Write-Host "  Stream refreshed (new target: $playerTargetId)"
+            try {
+                $playerResult = [CDP]::Send($browserWsUrl, "{`"id`":201,`"method`":`"Target.createTarget`",`"params`":{`"url`":`"$newPlayerUrl`"}}") | ConvertFrom-Json
+                $playerTargetId = $playerResult.result.targetId
+                Write-Host "  Stream refreshed (new target: $playerTargetId)"
+            } catch {
+                Write-Host "  ERROR: Failed to open new player tab" -ForegroundColor Red
+            }
+        } else {
+            Write-Host "  No new URL or same URL, skipping refresh"
         }
     }
 } else {
-    Write-Host "  Failed to get stream URL!"
+    Write-Host "  Failed to get stream URL!" -ForegroundColor Red
     pause; exit 1
 }

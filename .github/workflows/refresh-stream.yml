@@ -2,7 +2,7 @@ name: Refresh Stream URL
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/30 * * * *'  # every 30 min (token expires ~1 hr)
   workflow_dispatch:
 
 jobs:
