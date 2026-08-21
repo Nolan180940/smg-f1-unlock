@@ -71,6 +71,7 @@ CREATE TABLE visits (
 
 **GitHub Actions 失败**
 - 检查 Action 日志，常见原因：kankanews 页面改版导致 bypass 失效
+- 2026-08-21 改版要点：Vue 组件新增 `isCopyright` 开关（为真时 `initPlayer()` 直接销毁播放器）；`/program/detail` 接口不再返回 `live_address`（需从 `currChannelDetail.live_address` 复制到 `programDetail.channel_info.live_address`）。再失效时优先检查这两处
 - 可以尝试在本地运行 `node scripts/get-stream-url.mjs` 调试
 
 ---

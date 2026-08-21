@@ -96,8 +96,24 @@ $r = EvalJS 1 @'
     }
     var h = find(vue, "HuikanIndex");
     if (!h || !h.programObj) return "NO_COMP";
-    if (h.programObj.is_shield !== 1) return "ALREADY";
-    h.programObj.is_shield = 0;
+    // 2026-08: fix all shield flags
+    function fix(o) { if (!o) return; o.is_shield = 0; o.is_review = 1; o.can_review = 1; }
+    fix(h.programObj);
+    fix(h.programDetail);
+    fix(h.playingProgramObj);
+    // 2026-08: clear copyright image
+    if (h.currChannelDetail) h.currChannelDetail.copyright_image = "";
+    // 2026-08: restore live_address from channel detail (server removed it from program/detail API)
+    if (h.currChannelDetail && h.currChannelDetail.live_address && h.programDetail) {
+        h.programDetail.channel_info = h.programDetail.channel_info || {};
+        if (!h.programDetail.channel_info.live_address) {
+            h.programDetail.channel_info.live_address = h.currChannelDetail.live_address;
+        }
+    }
+    // 2026-08: bypass isCopyright gate (initPlayer destroys player when true)
+    h.isCopyright = false;
+    var mask = document.querySelector(".image-mask");
+    if (mask) mask.style.display = "none";
     h.$forceUpdate();
     setTimeout(function() { try { h.initPlayer(); } catch(e) {} }, 100);
     return "OK";
@@ -145,7 +161,20 @@ if ($m3u8) {
     }
     var h = find(vue, "HuikanIndex");
     if (h && h.programObj) {
-        if (h.programObj.is_shield === 1) h.programObj.is_shield = 0;
+        function fix(o) { if (!o) return; o.is_shield = 0; o.is_review = 1; o.can_review = 1; }
+        fix(h.programObj);
+        fix(h.programDetail);
+        fix(h.playingProgramObj);
+        if (h.currChannelDetail) h.currChannelDetail.copyright_image = "";
+        if (h.currChannelDetail && h.currChannelDetail.live_address && h.programDetail) {
+            h.programDetail.channel_info = h.programDetail.channel_info || {};
+            if (!h.programDetail.channel_info.live_address) {
+                h.programDetail.channel_info.live_address = h.currChannelDetail.live_address;
+            }
+        }
+        h.isCopyright = false;
+        var mask = document.querySelector(".image-mask");
+        if (mask) mask.style.display = "none";
         h.$forceUpdate();
         setTimeout(function() { try { h.initPlayer(); } catch(e) {} }, 200);
     }

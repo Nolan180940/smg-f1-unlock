@@ -53,9 +53,35 @@ async function getStreamUrl() {
 
       const huikan = findComponent(vue, 'HuikanIndex')
       if (!huikan || !huikan.programObj) return 'NO_COMP'
-      if (huikan.programObj.is_shield !== 1) return 'ALREADY'
 
-      huikan.programObj.is_shield = 0
+      // 2026-08: fix all shield flags
+      const fix = (o) => {
+        if (!o) return
+        o.is_shield = 0
+        o.is_review = 1
+        o.can_review = 1
+      }
+      fix(huikan.programObj)
+      fix(huikan.programDetail)
+      fix(huikan.playingProgramObj)
+
+      // 2026-08: clear copyright image
+      if (huikan.currChannelDetail) huikan.currChannelDetail.copyright_image = ''
+
+      // 2026-08: restore live_address from channel detail (server removed it from program/detail API)
+      if (huikan.currChannelDetail && huikan.currChannelDetail.live_address && huikan.programDetail) {
+        huikan.programDetail.channel_info = huikan.programDetail.channel_info || {}
+        if (!huikan.programDetail.channel_info.live_address) {
+          huikan.programDetail.channel_info.live_address = huikan.currChannelDetail.live_address
+        }
+      }
+
+      // 2026-08: bypass isCopyright gate (initPlayer destroys player when true)
+      huikan.isCopyright = false
+
+      const mask = document.querySelector('.image-mask')
+      if (mask) mask.style.display = 'none'
+
       huikan.$forceUpdate()
       setTimeout(() => { try { huikan.initPlayer() } catch (e) {} }, 100)
       return 'OK'

@@ -105,8 +105,9 @@ run.bat
         ├→ 等待页面加载（5s）
         ├→ CDP WebSocket 注入 JavaScript:
         │    1. 找到 Vue 组件 HuikanIndex
-        │    2. programObj.is_shield = 0
-        │    3. 调 initPlayer()
+        │    2. 修复版权字段（is_shield / is_review / can_review）
+        │    3. 恢复 live_address + 关闭 isCopyright 开关
+        │    4. 调 initPlayer()
         ├→ 等待流加载（6s）
         ├→ 从 performance 日志提取 m3u8 URL
         ├→ 用 Edge 打开 player.html#URL（URL 放 hash 里）
@@ -120,7 +121,7 @@ player.html
 
 **数据流：** `.bat` → `.ps1` → CDP 操作 Edge → 取 m3u8 → 开 `.html#URL` → hls.js 播
 
-**原理：** PowerShell 用 C# 的 `ClientWebSocket` 连接 Edge 的 CDP WebSocket 接口，通过 `Runtime.evaluate` 在页面上下文中执行 JavaScript（修改 `is_shield` → 调用 `initPlayer()` → 从 `performance.getEntriesByType('resource')` 提取 m3u8 URL）。
+**原理：** PowerShell 用 C# 的 `ClientWebSocket` 连接 Edge 的 CDP WebSocket 接口，通过 `Runtime.evaluate` 在页面上下文中执行 JavaScript（修复 `is_shield` 等版权字段 → 恢复 `live_address` → 关闭 `isCopyright` → 调用 `initPlayer()` → 从 `performance.getEntriesByType('resource')` 提取 m3u8 URL）。
 
 **要求：** Windows + Edge/Chrome，无需安装任何额外软件。
 
