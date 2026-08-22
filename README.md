@@ -94,9 +94,9 @@
 
 | 问题 | 现象 | 解决方案 |
 |------|------|---------|
-| **iOS 跳转手机版** | 访问后跳到 `m.kankanews.com`，页面 404 | Safari 地址栏 → 点 `aA` → **"请求桌面网站"**。或 iPhone 设置 → Safari → 请求桌面网站 → 加入 `kankanews.com` |
+| **iOS 跳转手机版** | 访问后跳到 `m.kankanews.com`，页面 404 或者依旧有版权限制 | Safari 地址栏 → 点 `aA` → **"请求桌面网站"**（这是最需要注意的，因为手机版和桌面版网页架构不一样，这是你最有可能遇到的问题）。或 iPhone 设置 → Safari → 请求桌面网站 → 加入 `kankanews.com` |
 | **手机端无限跳转** | 页面在 `m.` 和 `live.` 之间疯狂闪烁 | v0.15 已用 `replaceState` 修复。配合"请求桌面网站"效果最佳 |
-| **回放加载慢/无画面** | 点击回放后转圈但无画面 | 回放支持 5 分钟 ~ 12 小时内的节目。超过 12 小时不支持 |
+| **回放加载慢/无画面** | 点击回放后转圈但无画面 | 回放支持 一周 内的节目 |
 | **Tampermonkey 不生效** | 脚本已安装但页面无变化 | 检查：① 脚本开关是否打开 ② 是否被当前站点禁用 ③ Console 有无 `[SMGTV]` 日志 |
 | **`initPlayer()` 报错** | 控制台 "Cannot read property of undefined" | 等页面完全加载后再运行。Console 方式看 `[SMGTV] Vue found` 日志；Tampermonkey 方式会自动重试 |
 | **版权遮罩图仍显示** | `.image-mask` 未被隐藏 | 网站可能改了 class 名。DevTools → Elements → 搜索 `copyright`，找到新 class 加入 CSS |
