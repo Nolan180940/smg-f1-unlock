@@ -210,17 +210,20 @@ v.player.play();
 如果只需要绕过版权限制看直播，不需要回放，用这段更短的代码：
 
 ```js
-var v=document.querySelector('.huikan').__vue__;
-if(!v){console.error('未找到Vue组件');return}
-function f(o){if(!o)return;o.is_shield=0;o.is_review=1;o.can_review=1}
-f(v.programObj);f(v.programDetail);f(v.playingProgramObj);
-if(v.currChannelDetail){v.currChannelDetail.copyright_image='';v.currChannelDetail.live_shift=0}
-if(v.currChannel){v.currChannel.copyright_image='';v.currChannel.live_shift=0}
-if(v.currChannelDetail&&v.currChannelDetail.live_address){
-  v.programDetail.channel_info=v.programDetail.channel_info||{};
-  v.programDetail.channel_info.live_address=v.currChannelDetail.live_address}
-v.isCopyright=false;
-var m=document.querySelector('.image-mask');if(m)m.style.display='none';
-v.$forceUpdate();
-try{v.initPlayer();}catch(e){}
+// SMGTV 仅直播 — Console 版 (v0.17)
+(function(){
+    var v=document.querySelector('.huikan').__vue__;
+    if(!v){console.error('[SMGTV] 未找到Vue组件');return}
+    function f(o){if(!o)return;o.is_shield=0;o.is_review=1;o.can_review=1}
+    f(v.programObj);f(v.programDetail);f(v.playingProgramObj);
+    if(v.currChannelDetail){v.currChannelDetail.copyright_image='';v.currChannelDetail.live_shift=0}
+    if(v.currChannel){v.currChannel.copyright_image='';v.currChannel.live_shift=0}
+    if(v.currChannelDetail&&v.currChannelDetail.live_address){
+        v.programDetail.channel_info=v.programDetail.channel_info||{};
+        v.programDetail.channel_info.live_address=v.currChannelDetail.live_address}
+    v.isCopyright=false;
+    var m=document.querySelector('.image-mask');if(m)m.style.display='none';
+    v.$forceUpdate();
+    try{v.initPlayer();}catch(e){}
+})();
 ```
