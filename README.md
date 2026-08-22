@@ -6,9 +6,7 @@
 
 这是因为服务端返回的节目数据中 `is_shield=1`，且频道带有 `copyright_image` 版权遮罩图，前端据此拦截播放。
 
-本项目提供**绕过版权限制**和**节目回放**两种能力。、
-
-> Note: 回看功能尚未完善
+本项目提供**绕过版权限制**和**节目回放**两种能力。
 
 ---
 
@@ -49,7 +47,7 @@
 
 ---
 
-## 回放原理 (v0.13)
+## 回放原理 (v0.17)
 
 ### 发现：CDN 支持时间偏移
 
@@ -76,10 +74,10 @@ https://volc-stream.kksmg.com/live/dfws4k/index.m3u8?token=eyJ...&volcSecret=...
 偏移流的 manifest 特征：
 - `#EXT-X-VERSION:6`（正常流为 `#EXT-X-VERSION:3`）
 - 每个分段 ~10 秒，manifest 返回 3 个分段（~30 秒）
-- HLS.js 自动轮询 manifest 获取后续分段，连续播放
+- **CDN shift 是静态的**：相同 `startTime` 永远返回相同的3个分片，不是滑动窗口
 - 分段名格式：`10000-{timestamp}-{x}-{seq}.ts?shift=true&sign=false`
 
-### 难点：为什么不能直接用 `initPlayer`？
+### 难点 1：为什么不能直接用 `initPlayer`？
 
 网站的 `initPlayer` 内部有这行代码：
 
@@ -92,9 +90,38 @@ _ = Object(E.a)(y)   // E.a = webpack 模块 560，RSA 解密函数（JSEncrypt�
 
 播放器拿到空 URL 就不播了。
 
+### 难点 2：30 秒冻结问题（v0.17 修复）
+
+**根因**：CDN shift manifest 返回**固定的3个分片**（~30秒），不是滑动窗口。
+
+```
+HLS.js 加载 shift manifest → 获取3个分片（30秒）→ 播放完
+    ↓
+HLS.js poll 重新请求同一 URL（startTime 不变）
+    ↓
+CDN 返回完全相同的3个分片 → 无新内容 → ❌ 卡住
+```
+
+**验证**：向 CDN 发3次相同 `startTime` 请求，返回的 `mediaSequence` 完全相同：
+
+| 请求次数 | startTime | mediaSequence | 结果 |
+|----------|-----------|---------------|------|
+| 第1次 | 1787403877 | 1786649705 | 3 segments |
+| 第2次 | 同上 | **1786649705** | 完全相同 |
+| 第3次 | 同上 | **1786649705** | 完全相同 |
+| 第4次（+50s） | 1787403927 | **1786649710** | 不同 ✅ |
+
+**解决方案**：每次 HLS.js 轮询 manifest 时，**动态更新 `startTime`**：
+
+```
+newStartTime = programStartTime + player.currentTime
+```
+
+这样每次 poll 都能拿到**新的3个分片**，实现无限续播。
+
 ### 解决方案
 
-**绕过 `initPlayer`，直接用 `new $xgplayer()` 创建播放器**：
+**绕过 `initPlayer`，直接用 `new $xgplayer()` 创建播放器 + 动态 startTime hook**：
 
 ```
 用户点击回放节目
@@ -105,7 +132,13 @@ _ = Object(E.a)(y)   // E.a = webpack 模块 560，RSA 解密函数（JSEncrypt�
     ↓
 new $xgplayer({ url: 偏移URL, isLive: false, plugins: [HLS] })
     ↓
-播放器加载偏移流 → 回放开始
+Hook manifestLoader.load(): 虚拟位置追踪器 (_virtualPos)
+    ├── 正常 poll: startTime = programStart + _virtualPos（每秒自动推进）
+    └── 用户寻道: _virtualPos = seek目标（覆写 player.seek() 捕获）
+    ↓
+播放器加载偏移流 → 回放开始 → 无限续播 ✅
+    ↓
+用户拖动进度条 → player.seek() 覆写 → switchURL 完整切换目标分片 → _virtualPos 保持节目位置
 ```
 
 ---
@@ -114,14 +147,14 @@ new $xgplayer({ url: 偏移URL, isLive: false, plugins: [HLS] })
 
 ### 方式一：Console 粘贴（推荐）
 
-#### A. 直播 + 回放（完整版，v0.13）
+#### A. 直播 + 回放（完整版，v0.17）
 
 1. 用 Edge / Chrome 打开 https://live.kankanews.com/huikan?id=10
 2. 等页面加载完成（几秒）
 3. 按 **F12** → **Console** 标签 → 粘贴以下代码 → 回车：
 
 ```js
-// SMGTV 直播 + 回放 — Console 版 (v0.13)
+// SMGTV 直播 + 回放 — Console 版 (v0.17)
 (function(){
     var v=document.querySelector('.huikan').__vue__;
     if(!v){console.error('[SMGTV] 未找到Vue组件');return}
@@ -164,14 +197,16 @@ new $xgplayer({ url: 偏移URL, isLive: false, plugins: [HLS] })
     }
     window.makeShift=makeShift;
 
-    // ===== 5. 绕过initPlayer，直接创建回放播放器 =====
+    // ===== 5. 绕过initPlayer，直接创建回放播放器（v0.17: 动态 startTime + 真正切源寻道） =====
     var origInit=v.initPlayer;
     v.initPlayer=function(){
         var p=v.programObj;
         if(p&&p.play===0&&p.start_time){
             try{
                 var url=makeShift(p.start_time);
-                console.log('[SMGTV] [回放] 正在播放:',p.name,'时间戳:',p.start_time);
+                var pStart=p.start_time;
+                var pEnd=p.end_time||(pStart+7200);
+                console.log('[SMGTV] [回放] 正在播放:',p.name,'时间戳:',pStart);
                 v.destroyPlayer();
                 var vol=Number(localStorage.getItem('playerVolume'))||0.5;
                 v.player=new v.$xgplayer({
@@ -190,6 +225,80 @@ new $xgplayer({ url: 偏移URL, isLive: false, plugins: [HLS] })
                     plugins:[v.$hlsPlayer]
                 });
                 v.player.muted=v.isMuted;
+
+                // --- Hook manifest loader: 虚拟位置追踪 + 动态 startTime 防30秒冻结 ---
+                (function hookML(){
+                    var n=0;var t=setInterval(function(){
+                        n++;var hls=v.player.plugins&&v.player.plugins.hls&&v.player.plugins.hls.hls;
+                        if(!hls||!hls._manifestLoader){if(n>20)clearInterval(t);return}
+                        clearInterval(t);
+                        var ml=hls._manifestLoader;var ol=ml.load.bind(ml);
+
+                        // 虚拟位置追踪: 不依赖 player.currentTime (HLS.js会重置它)
+                        var _vPos=0,_vTs=Date.now(),_seeking=false,_hasSeek=false,_seekGen=0,_seekTmr=null,_seekQueue=Promise.resolve();
+                        try{Object.defineProperty(v.player,'offsetCurrentTime',{get:function(){return _vPos},set:function(){},configurable:true,enumerable:true})}catch(e){}
+                        function clamp(pos){pos=Number(pos);if(!isFinite(pos))return 0;return Math.max(0,Math.min(pEnd-pStart,pos))}
+                        function publish(){v.player.offsetCurrentTime=_vPos}
+                        // 每0.5秒推进虚拟位置 (播放中)
+                        setInterval(function(){
+                            if(!v.player.paused&&!_seeking){
+                                var now=Date.now();_vPos=clamp(_vPos+(now-_vTs)/1000);_vTs=now;publish();
+                            }else{_vTs=Date.now()}
+                        },500);
+                        // 首次寻道前，媒体相对时间可同步到节目时间
+                        // 从 currentTime 同步 (正常播放时)
+                        setInterval(function(){
+                            if(!v.player.paused&&!_seeking&&!_hasSeek){
+                                _vPos=clamp(v.player.currentTime);_vTs=Date.now();publish();
+                            }
+                        },1000);
+                        publish();
+
+                        // 覆写 player.seek() — 仅用户拖动进度条时触发
+                        v.player.seek=function(time){
+                            var target=clamp(time),ts=Math.floor(pStart+target),gen=++_seekGen,wasPaused=v.player.paused;
+                            _vPos=target;_vTs=Date.now();_seeking=true;_hasSeek=true;publish();
+                            if(_seekTmr)clearTimeout(_seekTmr);
+                            console.log('[SMGTV] [回放] Seek目标→',ts,'pos:',target.toFixed(1)+'s');
+                            _seekTmr=setTimeout(function(){
+                                var finalTarget=_vPos,finalTs=Math.floor(pStart+finalTarget),finalGen=_seekGen;
+                                _seekQueue=_seekQueue.catch(function(){}).then(function(){
+                                    if(finalGen!==_seekGen)return;
+                                    var url=makeShift(finalTs);
+                                    if(!url||typeof v.player.switchURL!=='function'){
+                                        console.error('[SMGTV] [回放] switchURL不可用');_seeking=false;return;
+                                    }
+                                    console.log('[SMGTV] [回放] 切换目标分片→',finalTs,'pos:',finalTarget.toFixed(1)+'s');
+                                    return Promise.resolve(v.player.switchURL(url,{seamless:false,currentTime:0})).then(function(){
+                                        if(finalGen!==_seekGen)return;
+                                        _seeking=false;_vTs=Date.now();publish();
+                                        if(wasPaused)v.player.pause();else v.player.play();
+                                        console.log('[SMGTV] [回放] 切源完成，节目位置:',_vPos.toFixed(1)+'s');
+                                    }).catch(function(e){
+                                        if(finalGen!==_seekGen)return;
+                                        _seeking=false;console.error('[SMGTV] [回放] 切源失败:',e);
+                                    });
+                                });
+                            },150);
+                        };
+
+                        // manifestLoader.load: 正常轮询仍使用虚拟节目位置
+                        ml.load=function(url){
+                            if(typeof url==='string'&&url.indexOf('startTime=')!==-1){
+                                var ts=Math.floor(pStart+_vPos);
+                                url=url.replace(/startTime=\d+/,'startTime='+ts);
+                                console.log('[SMGTV] [回放] startTime→',ts,'vPos:',_vPos.toFixed(1)+'s');
+                            }
+                            return ol(url);
+                        };
+                        // 进度条总时长
+                        var dur=pEnd-pStart;
+                        Object.defineProperty(v.player.video,'duration',{get:function(){return dur},configurable:true});
+                        v.player._duration=dur;
+                        console.log('[SMGTV] [回放] 时长:',dur+'s ('+(dur/60).toFixed(1)+' min)');
+                    },200);
+                })();
+
                 v.player.on('canplay',function(){v.isLoading=false});
                 v.player.on('ended',function(){
                     if(v.programObj.play===0&&v.playNextProgram)v.playNextProgram()
@@ -202,7 +311,7 @@ new $xgplayer({ url: 偏移URL, isLive: false, plugins: [HLS] })
     };
 
     console.log('[SMGTV] ✅ 已就绪！直播正常播放中');
-    console.log('[SMGTV] 👉 点击左侧节目列表中的历史节目即可回放');
+    console.log('[SMGTV] 👉 点击左侧节目列表中的历史节目即可回放（v0.17 支持进度条拖动）');
     console.log('[SMGTV] 👉 或在Console输入 makeShift(时间戳) 获取回放URL');
 })();
 ```
@@ -243,6 +352,7 @@ v.player.play();
 
 ```js
 var v=document.querySelector('.huikan').__vue__;
+if(!v){console.error('未找到Vue组件');return}
 function f(o){if(!o)return;o.is_shield=0;o.is_review=1;o.can_review=1}
 f(v.programObj);f(v.programDetail);f(v.playingProgramObj);
 if(v.currChannelDetail){v.currChannelDetail.copyright_image='';v.currChannelDetail.live_shift=0}
@@ -275,7 +385,7 @@ try{v.initPlayer();}catch(e){}
 - ✅ SPA 路由切换自动重新打补丁
 - ✅ Safari / Stay 兼容
 
-> 脚本 v0.13 已内置回放支持，点击左侧任何历史节目即可回放。
+> 脚本 v0.17 已内置回放支持（含真实切源和进度条拖动），点击左侧任何历史节目即可回放。
 >
 > ⚠️ 目前 `run.bat`（PowerShell 方式）暂不支持回放，Console 和 Tampermonkey 均可用。
 
@@ -416,6 +526,7 @@ player.html
 - 回放功能支持最近 **5 分钟 ~ 12 小时** 内的节目
 - 如果是 F1 等时效性很强的节目，建议在赛后尽快回看
 - 超过 12 小时的节目建议通过看看新闻 App 的"往期回看"功能
+- v0.17 已修复30秒冻结和寻道画面不同步问题，回放可持续播放到节目结束
 
 ---
 
@@ -436,6 +547,26 @@ player.html
 **原因：** Stay 默认使用 Content Script 注入方式，脚本运行在隔离的上下文中，无法访问页面的 `__vue__` 对象。
 
 **解决方案：** Stay 脚本设置 → 注入方式 → 改为 **Page**（非 Auto / Content）。
+
+---
+
+### 10. 🔴 回放30秒后冻结 / 进度条无法拖动（v0.17 已修复）
+
+**现象：** 点击回放节目后，播放30秒后画面卡住不动，进度条只能在0~30秒范围内拖动。
+
+**根因：** CDN shift manifest 返回**固定3个分片**（~30秒），不是滑动窗口。HLS.js 轮询同一 URL 每次拿到相同分片 → 无新内容 → 冻结。
+
+**验证（实测）：**
+```
+相同 startTime 请求3次 → 返回完全相同的3个分片（mediaSequence 不变）
+更新 startTime +50s → 返回不同的分片（mediaSequence 递增）✅
+```
+
+**解决方案（v0.17）：**
+1. 用虚拟位置追踪器计算节目内位置，不依赖 HLS.js 寻道后会重置的媒体相对时间
+2. 覆写 `player.seek()` 捕获进度条目标，并防抖拖动过程中的重复调用
+3. 调用站点 HLS 内核的 `player.switchURL(url, {seamless:false, currentTime:0})`，完整清理旧缓冲并加载目标分片
+4. 用 `offsetCurrentTime` 保持进度条显示节目内位置，并用 `video.duration` 显示节目总时长
 
 ---
 

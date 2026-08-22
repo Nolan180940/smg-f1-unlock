@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name             收看SMGTV电视节目
 // @namespace        http://tampermonkey.net/
-// @version          0.14
-// @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制（Safari/Stay 兼容 + 多路径 Vue 探测 + 回放功能）
+// @version          0.17
+// @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制（Safari/Stay 兼容 + 多路径 Vue 探测 + 回放功能 + 进度条拖动）
 // @author           https://github.com/Nolan180940
 // @match            https://live.kankanews.com/*
 // @match            https://m.kankanews.com/*
@@ -18,7 +18,7 @@
 (function() {
     "use strict";
 
-    console.log("[SMGTV] ========== v0.14 ==========");
+    console.log("[SMGTV] ========== v0.17 ==========");
     console.log("[SMGTV] URL:", location.href);
 
     // ===== 0. Mobile handling =====
@@ -195,11 +195,12 @@
         }
     }
 
-    // Override initPlayer to directly create xgplayer for past programs.
-    // The server never provides shift_address, so we build it from the volc-stream CDN pattern.
-    // KEY INSIGHT: initPlayer calls Object(E.a)(y) which is RSA-decrypt (module 560).
-    // It works for encrypted live_address but corrupts plain URLs to empty string.
-    // Solution: for past programs, bypass initPlayer entirely and create the player directly.
+    // ===== 4c. Replay: dynamic startTime + real source-switch seeking =====
+    // ROOT CAUSE: CDN shift manifest returns only 3 segments (~30s) for a fixed startTime.
+    // Same startTime → same 3 segments every time. After 30s, HLS.js re-fetches → same data → freeze.
+    // FIX: Before each manifest load, rewrite startTime = programStartTime + playback position.
+    // This makes each poll fetch segments from the CURRENT playback position, enabling infinite replay.
+    // For seek: switch the complete HLS source so old MSE data cannot remain on screen.
     var _initPlayerPatched = false;
     function patchInitPlayer(vue) {
         if (_initPlayerPatched) return;
@@ -211,22 +212,21 @@
                 var pObj = vue.programObj;
                 // Past program (play=0) with start_time — create player directly
                 if (pObj && pObj.play === 0 && pObj.start_time) {
-                    // Get the decrypted live URL from the existing player
                     var liveUrl = (vue.player && vue.player.config && vue.player.config.url) || "";
                     if (liveUrl) {
                         var shiftUrl = buildShiftUrl(liveUrl, pObj.start_time);
                         if (shiftUrl) {
-                            // Set flags so isCopyright gate passes
                             pObj.is_shield = 0;
                             pObj.is_review = 1;
                             vue.isCopyright = true;
-
-                            // Destroy existing player
                             vue.destroyPlayer();
 
-                            // Create xgplayer directly with shift URL (bypass E.a)
                             var volume = localStorage.getItem("playerVolume");
                             volume = volume ? Number(volume) : 0.5;
+
+                            // Track program start time for dynamic startTime calculation
+                            var programStartTime = pObj.start_time;
+                            var programEndTime = pObj.end_time || (programStartTime + 7200);
 
                             vue.player = new vue.$xgplayer({
                                 el: vue.$refs.livePlayer,
@@ -245,9 +245,214 @@
                             });
                             vue.player.muted = vue.isMuted;
 
+                            // --- Hook into HLS.js manifest loader for dynamic startTime ---
+                            function hookManifestLoader(player) {
+                                // Wait for HLS.js plugin to initialize (may need a tick)
+                                var attempts = 0;
+                                var hookTimer = setInterval(function() {
+                                    attempts++;
+                                    var hlsPlugin = player.plugins && player.plugins.hls;
+                                    var hls = hlsPlugin && hlsPlugin.hls;
+                                    if (!hls || !hls._manifestLoader) {
+                                        if (attempts > 20) { clearInterval(hookTimer); }
+                                        return;
+                                    }
+                                    clearInterval(hookTimer);
+
+                                    var manifestLoader = hls._manifestLoader;
+                                    var origMlLoad = manifestLoader.load.bind(manifestLoader);
+
+                                    // --- Seek + position tracking ---
+                                    // HLS.js returns a short, relative media timeline after every
+                                    // shift-manifest load. Calling manifestLoader.load() alone only
+                                    // downloads the manifest; it does not replace the old MSE buffer.
+                                    //
+                                    // Use xgplayer.switchURL() for a real source switch. Its HLS
+                                    // implementation clears the old buffer, loads the new manifest,
+                                    // selects the first segment, and starts the media at relative 0.
+                                    // _virtualPos is the position in the full program and is exposed
+                                    // to the progress controls through offsetCurrentTime.
+                                    var _virtualPos = 0;
+                                    var _virtualPosTs = Date.now();
+                                    var _isSeeking = false;
+                                    var _hasUserSeek = false;
+                                    var _seekGeneration = 0;
+                                    var _seekDebounceTimer = null;
+                                    var _seekSwitchQueue = Promise.resolve();
+
+                                    // The HLS plugin resets offsetCurrentTime to -1 while it
+                                    // clears/rebuilds MediaSource. Install an instance-level
+                                    // logical-time property so the progress/time controls keep
+                                    // showing the program position during and after that reset.
+                                    try {
+                                        Object.defineProperty(player, "offsetCurrentTime", {
+                                            get: function() { return _virtualPos; },
+                                            set: function() {},
+                                            configurable: true,
+                                            enumerable: true
+                                        });
+                                    } catch (e) {
+                                        console.warn("[SMGTV] [Replay] Could not lock offsetCurrentTime:", e);
+                                    }
+
+                                    function clampVirtualPos(pos) {
+                                        pos = Number(pos);
+                                        if (!isFinite(pos)) return 0;
+                                        return Math.max(0, Math.min(
+                                            programEndTime - programStartTime, pos));
+                                    }
+
+                                    function publishVirtualPos() {
+                                        // The instance getter above is the source of truth. Keep
+                                        // this call for fallback compatibility if defineProperty
+                                        // is unavailable in an older browser.
+                                        player.offsetCurrentTime = _virtualPos;
+                                    }
+
+                                    // Advance the program position independently from the relative
+                                    // media currentTime. This survives HLS.js resetting media time
+                                    // to 0 after a source switch.
+                                    setInterval(function() {
+                                        if (!player.paused && !_isSeeking) {
+                                            var now = Date.now();
+                                            _virtualPos += (now - _virtualPosTs) / 1000;
+                                            _virtualPosTs = now;
+                                            _virtualPos = clampVirtualPos(_virtualPos);
+                                            publishVirtualPos();
+                                        } else {
+                                            _virtualPosTs = Date.now();
+                                        }
+                                    }, 500);
+
+                                    // Before the first user seek, media time and program time are
+                                    // identical, so it is safe to synchronize the virtual position.
+                                    setInterval(function() {
+                                        if (!player.paused && !_isSeeking && !_hasUserSeek) {
+                                            _virtualPos = clampVirtualPos(player.currentTime);
+                                            _virtualPosTs = Date.now();
+                                            publishVirtualPos();
+                                        }
+                                    }, 1000);
+                                    publishVirtualPos();
+
+                                    // Override player.seek() — the progress plugin calls this for a
+                                    // user click/drag. Do NOT call the original seek(time): the new
+                                    // manifest's media timeline starts at 0, not at `time` (2400s).
+                                    player.seek = function(time) {
+                                        var target = clampVirtualPos(time);
+                                        var seekTs = Math.floor(programStartTime + target);
+                                        ++_seekGeneration;
+                                        var wasPaused = player.paused;
+                                        _hasUserSeek = true;
+                                        _virtualPos = target;
+                                        _virtualPosTs = Date.now();
+                                        _isSeeking = true;
+                                        publishVirtualPos();
+
+                                        if (_seekDebounceTimer) {
+                                            clearTimeout(_seekDebounceTimer);
+                                        }
+
+                                        console.log("[SMGTV] [Replay] Seek target → pos=" +
+                                            target.toFixed(1) + "s", "seekTime=" + seekTs);
+
+                                        // The progress plugin calls seek repeatedly while dragging.
+                                        // Switch only once after the drag settles; otherwise several
+                                        // asynchronous HLS resets race and the last old request wins.
+                                        _seekDebounceTimer = setTimeout(function() {
+                                            var finalTarget = _virtualPos;
+                                            var finalTs = Math.floor(programStartTime + finalTarget);
+                                            var finalGeneration = _seekGeneration;
+                                            var finalWasPaused = player.paused;
+
+                                            // A drag can produce several seek() calls. Queue complete
+                                            // source switches so an older async switch cannot race
+                                            // with and overwrite the latest target.
+                                            _seekSwitchQueue = _seekSwitchQueue.catch(function() {}).then(function() {
+                                                if (finalGeneration !== _seekGeneration) return;
+
+                                                var seekUrl = buildShiftUrl(liveUrl, finalTs);
+                                                if (!seekUrl || typeof player.switchURL !== "function") {
+                                                    console.error("[SMGTV] [Replay] switchURL unavailable; seek cancelled");
+                                                    _isSeeking = false;
+                                                    return;
+                                                }
+
+                                                console.log("[SMGTV] [Replay] Switching source:",
+                                                    "vPos=" + finalTarget.toFixed(1) + "s",
+                                                    "seekTime=" + finalTs);
+
+                                                // switchURL performs the full HLS reset. currentTime: 0
+                                                // is relative to the new manifest, not the program.
+                                                var switchPromise;
+                                                try {
+                                                    switchPromise = player.switchURL(seekUrl, {
+                                                        seamless: false,
+                                                        currentTime: 0
+                                                    });
+                                                } catch (error) {
+                                                    _isSeeking = false;
+                                                    console.error("[SMGTV] [Replay] Seek source switch failed:", error);
+                                                    return;
+                                                }
+
+                                                return Promise.resolve(switchPromise).then(function() {
+                                                    if (finalGeneration !== _seekGeneration) return;
+                                                    _isSeeking = false;
+                                                    _virtualPosTs = Date.now();
+                                                    publishVirtualPos();
+                                                    if (finalWasPaused) player.pause();
+                                                    else player.play();
+                                                    console.log("[SMGTV] [Replay] Seek source switched:",
+                                                        "vPos=" + _virtualPos.toFixed(1) + "s");
+                                                }).catch(function(error) {
+                                                    if (finalGeneration !== _seekGeneration) return;
+                                                    _isSeeking = false;
+                                                    console.error("[SMGTV] [Replay] Seek source switch failed:", error);
+                                                });
+                                            });
+                                        }, 150);
+
+                                        return undefined;
+                                    };
+
+                                    // Override manifestLoader.load — ALWAYS use _virtualPos
+                                    manifestLoader.load = function(url) {
+                                        if (typeof url === "string" && url.indexOf("startTime=") !== -1) {
+                                            var newStartTime = Math.floor(programStartTime + _virtualPos);
+                                            var newUrl = url.replace(/startTime=\d+/, "startTime=" + newStartTime);
+                                            if (newUrl !== url) {
+                                                console.log("[SMGTV] [Replay] startTime→",
+                                                    "vPos=" + _virtualPos.toFixed(1) + "s",
+                                                    "→ ts=" + newStartTime);
+                                            }
+                                            return origMlLoad(newUrl);
+                                        }
+                                        return origMlLoad.apply(this, arguments);
+                                    };
+
+                                    console.log("[SMGTV] [Replay] Manifest loader hooked (virtual pos tracker)");
+                                    var dur = programEndTime - programStartTime;
+                                    // Override video.duration with a getter so xgplayer always
+                                    // sees the real program duration (even if codec fails to init)
+                                    Object.defineProperty(player.video, "duration", {
+                                        get: function() { return dur; },
+                                        configurable: true
+                                    });
+                                    player._duration = dur;
+
+                                    console.log("[SMGTV] [Replay] Program duration set:",
+                                        dur + "s (" + (dur / 60).toFixed(1) + " min)");
+                                }, 200);
+                            }
+
+                            hookManifestLoader(vue.player);
+
                             // Event handlers
                             vue.player.on("canplay", function() {
                                 vue.isLoading = false;
+                                // Force xgplayer to pick up our overridden duration
+                                vue.player.video.dispatchEvent(new Event("loadedmetadata"));
                             });
                             vue.player.on("ended", function() {
                                 if (vue.programObj.play === 0 && typeof vue.playNextProgram === "function") {
@@ -261,11 +466,12 @@
                             });
 
                             console.log("[SMGTV] [Replay] Direct player created for:", pObj.name,
-                                "startTime:", pObj.start_time, "url:", shiftUrl.substring(0, 80));
+                                "startTime:", programStartTime,
+                                "duration:", (programEndTime - programStartTime) + "s",
+                                "url:", shiftUrl.substring(0, 80));
                             return;
                         }
                     }
-                    // Fallback: no live URL available yet, try origInitPlayer
                     console.warn("[SMGTV] [Replay] No live URL for shift, falling back to orig initPlayer");
                 }
             } catch(e) {
