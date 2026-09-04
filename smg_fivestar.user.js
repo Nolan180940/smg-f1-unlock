@@ -188,7 +188,8 @@
         "-----END PUBLIC KEY-----";
     var SMG_API_SECRET = "28c8edde3d61a0411511d3b1866f0636";
     var SMG_API_VERSION = "2.42.23";
-    var SMG_DONOR_IDS = [2215494];
+    var SMG_DONOR_IDS = [2215494, 2215102, 2213967];
+    var SMG_DONOR_SCAN_DAYS = 7;
     var _smgTokenCache = null;
 
     function smgMd5(str) {
@@ -369,26 +370,73 @@
         return SMG_DONOR_IDS[0];
     }
 
+    function smgDateStr(offsetDays) {
+        var d = new Date(Date.now() - offsetDays * 86400000);
+        var mm = ("0" + (d.getMonth() + 1)).slice(-2);
+        var dd = ("0" + d.getDate()).slice(-2);
+        return d.getFullYear() + "-" + mm + "-" + dd;
+    }
+
     function smgEnsureToken(vue, cb) {
         if (smgTokenValid(_smgTokenCache)) {
             cb(_smgTokenCache);
             return;
         }
         // Candidate donor IDs: today's reviewable program first, then known-good
-        // history. Only programs with is_review=1 carry a shift_address; all
-        // others return empty addresses and must be skipped, not failed on.
+        // history, then a day-by-day backward scan of the programs API (up to
+        // SMG_DONOR_SCAN_DAYS). Only programs with is_review=1 carry a
+        // shift_address; all others return empty addresses and must be skipped,
+        // not failed on. NOTE: today's reviewable program may not have aired yet
+        // (empty shift_address before broadcast), hence the backward scan.
         var tried = {};
         var queue = [];
-        var first = smgFindDonorId(vue);
-        if (first) queue.push(first);
-        for (var i = 0; i < SMG_DONOR_IDS.length; i++) {
-            if (SMG_DONOR_IDS[i] !== first) queue.push(SMG_DONOR_IDS[i]);
+        function enqueue(id) {
+            if (id && !tried[id] && queue.indexOf(id) === -1) queue.push(id);
         }
+        enqueue(smgFindDonorId(vue));
+        for (var i = 0; i < SMG_DONOR_IDS.length; i++) enqueue(SMG_DONOR_IDS[i]);
         console.log("[SMGTV] [Token] donor queue:", queue.join(","));
+        function scanDay(offset, done) {
+            if (offset >= SMG_DONOR_SCAN_DAYS) {
+                done();
+                return;
+            }
+            var dateStr = smgDateStr(offset);
+            console.log("[SMGTV] [Token] scanning programs for donor:", dateStr);
+            smgApiGet("/content/pc/tv/programs", { channel_id: 10, date: dateStr }).then(function(data) {
+                var list = (data && data.result && data.result.programs) || [];
+                var added = 0;
+                for (var j = 0; j < list.length; j++) {
+                    if (list[j] && list[j].is_review === 1 && list[j].id &&
+                        tried[list[j].id] === undefined && queue.indexOf(list[j].id) === -1) {
+                        queue.push(list[j].id);
+                        added++;
+                    }
+                }
+                console.log("[SMGTV] [Token] scan " + dateStr + ": +" + added + " donors");
+                done();
+            }).catch(function(e) {
+                console.warn("[SMGTV] [Token] scan failed for " + dateStr + ":",
+                    e && e.message);
+                done();
+            });
+        }
         function tryNext() {
             if (!queue.length) {
-                console.error("[SMGTV] [Token] bootstrap failed: all donors empty");
-                cb(null);
+                // No candidates left — scan one more day back, then retry.
+                scanDay(smgEnsureToken._scanOffset || 0, function() {
+                    smgEnsureToken._scanOffset = (smgEnsureToken._scanOffset || 0) + 1;
+                    if (!queue.length && smgEnsureToken._scanOffset >= SMG_DONOR_SCAN_DAYS) {
+                        console.error("[SMGTV] [Token] bootstrap failed: all donors empty");
+                        cb(null);
+                        return;
+                    }
+                    if (!queue.length) {
+                        tryNext();
+                        return;
+                    }
+                    tryNext();
+                });
                 return;
             }
             var donorId = queue.shift();
@@ -424,6 +472,7 @@
                 tryNext();
             });
         }
+        smgEnsureToken._scanOffset = 0;
         tryNext();
     }
 
@@ -500,14 +549,17 @@
                             var volume = localStorage.getItem("playerVolume");
                             volume = volume ? Number(volume) : 0.5;
 
-                            // Track program start time for dynamic startTime calculation
-                            var programStartTime = pObj.start_time;
+                            // Track program start time for dynamic startTime calculation.
+                            // Live (play=1): the shift manifest is a sliding window at the
+                            // live edge — plain live manifest, NO virtual-pos rewriting.
+                            var isLiveEdge = pObj.play !== 0;
+                            var programStartTime = isLiveEdge ? wantStart : pObj.start_time;
                             var programEndTime = pObj.end_time || (programStartTime + 7200);
 
                             vue.player = new vue.$xgplayer({
                                 el: vue.$refs.livePlayer,
                                 url: shiftUrl,
-                                isLive: false,
+                                isLive: isLiveEdge,
                                 fluid: true,
                                 crossOrigin: true,
                                 controls: true,
@@ -722,13 +774,15 @@
                                 }, 200);
                             }
 
-                            hookManifestLoader(vue.player);
+                            // Live-edge needs no virtual-pos machinery: the manifest is
+                            // already a live sliding window. Only hook for replay.
+                            if (!isLiveEdge) hookManifestLoader(vue.player);
 
                             // Event handlers
                             vue.player.on("canplay", function() {
                                 vue.isLoading = false;
                                 // Force xgplayer to pick up our overridden duration
-                                vue.player.video.dispatchEvent(new Event("loadedmetadata"));
+                                if (!isLiveEdge) vue.player.video.dispatchEvent(new Event("loadedmetadata"));
                             });
                             vue.player.on("ended", function() {
                                 if (vue.programObj.play === 0 && typeof vue.playNextProgram === "function") {

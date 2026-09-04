@@ -102,12 +102,28 @@
         for(var i=0;i<ls.length;i++){if(!Array.isArray(ls[i]))continue;
             for(var j=0;j<ls[i].length;j++)if(ls[i][j]&&ls[i][j].is_review===1&&ls[i][j].id)return ls[i][j].id}
         return 2215494}
+    var DONOR_IDS=[2215494,2215102,2213967],SCAN_DAYS=7,SCAN_OFF=0;
+    function dStr(off){var d=new Date(Date.now()-off*86400000);
+        return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)}
     function ensureTok(cb){
         if(tokValid(_tok)){cb(_tok);return}
-        var tried={},q=[],first=findDonor();
-        if(first)q.push(first);q.push(2215494);
+        var tried={},q=[];
+        function en(id){if(id&&!tried[id]&&q.indexOf(id)===-1)q.push(id)}
+        en(findDonor());for(var i=0;i<DONOR_IDS.length;i++)en(DONOR_IDS[i]);
+        function scan(off,done){
+            if(off>=SCAN_DAYS){done();return}
+            var ds=dStr(off);
+            console.log('[SMGTV] [Token] 回翻节目单找 donor:',ds);
+            apiGet('/content/pc/tv/programs',{channel_id:10,date:ds}).then(function(d){
+                var ls=(d&&d.result&&d.result.programs)||[],n=0;
+                for(var j=0;j<ls.length;j++)if(ls[j]&&ls[j].is_review===1&&ls[j].id&&!tried[ls[j].id]&&q.indexOf(ls[j].id)===-1){q.push(ls[j].id);n++}
+                console.log('[SMGTV] [Token] '+ds+': +'+n+' donors');done()}).catch(function(e){console.warn('[SMGTV] [Token] 回翻失败 '+ds);done()})}
         (function next(){
-            if(!q.length){console.error('[SMGTV] [Token] 所有 donor 均无地址');cb(null);return}
+            if(!q.length){
+                scan(SCAN_OFF++,function(){
+                    if(!q.length&&SCAN_OFF>=SCAN_DAYS){console.error('[SMGTV] [Token] 所有 donor 均无地址');cb(null);return}
+                    next()});
+                return}
             var did=q.shift();
             if(tried[did]){next();return}
             tried[did]=true;
@@ -118,7 +134,8 @@
                 if(!enc){console.warn('[SMGTV] [Token] donor 无地址，换下一个 (id='+did+')');next();return}
                 var pl=rsaDec(enc);if(!pl)throw new Error('解密失败');
                 var t=tokFromUrl(pl);if(!t)throw new Error('URL 解析失败');
-                _tok=t;console.log('[SMGTV] [Token] 就绪, donor='+did+', stream='+t.stream);
+                _tok=t;if(DONOR_IDS[0]!==did)DONOR_IDS.unshift(did);
+                console.log('[SMGTV] [Token] 就绪, donor='+did+', stream='+t.stream);
                 cb(t)}).catch(function(e){console.warn('[SMGTV] [Token] donor 出错，换下一个:',e&&e.message);next()})})()}
 
     // ===== 3. 构建偏移URL的函数（token 来自自举，不再依赖直播播放器） =====
@@ -146,15 +163,16 @@
                 var url=makeShift(want);
                 if(!url){console.error('[SMGTV] makeShift 失败');return}
                 try{
-                var pStart=(p.play===0)?p.start_time:want;
-                var pEnd=(p.play===0)?(p.end_time||(pStart+7200)):(want+3600);
+                var isLive=p.play!==0;
+                var pStart=isLive?want:p.start_time;
+                var pEnd=isLive?(want+3600):(p.end_time||(pStart+7200));
                 console.log('[SMGTV] [回放] 正在播放:',p.name,'时间戳:',pStart);
                 v.destroyPlayer();
                 var vol=Number(localStorage.getItem('playerVolume'))||0.5;
                 v.player=new v.$xgplayer({
                     el:v.$refs.livePlayer,
                     url:url,
-                    isLive:false,
+                    isLive:isLive,
                     fluid:true,
                     crossOrigin:true,
                     controls:true,
@@ -168,8 +186,8 @@
                 });
                 v.player.muted=v.isMuted;
 
-                // --- Hook manifest loader: 虚拟位置追踪 + 动态 startTime 防30秒冻结 ---
-                (function hookML(){
+                // --- 回放 Hook: 虚拟位置追踪 + 动态 startTime 防30秒冻结（仅回放，直播边缘为原生滑动窗口） ---
+                if(!isLive)(function hookML(){
                     var n=0;var t=setInterval(function(){
                         n++;var hls=v.player.plugins&&v.player.plugins.hls&&v.player.plugins.hls.hls;
                         if(!hls||!hls._manifestLoader){if(n>20)clearInterval(t);return}
@@ -240,7 +258,7 @@
                     },200);
                 })();
 
-                v.player.on('canplay',function(){v.isLoading=false});
+                v.player.on('canplay',function(){v.isLoading=false;if(!isLive)try{v.player.video.dispatchEvent(new Event('loadedmetadata'))}catch(e){}});
                 v.player.on('ended',function(){
                     if(v.programObj.play===0&&v.playNextProgram)v.playNextProgram()
                 });
