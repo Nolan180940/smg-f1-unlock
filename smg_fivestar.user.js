@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name             收看SMGTV电视节目
 // @namespace        http://tampermonkey.net/
-// @version          0.17
-// @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制（Safari/Stay 兼容 + 多路径 Vue 探测 + 回放功能 + 进度条拖动）
+// @version          0.18
+// @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制（Safari/Stay 兼容 + 多路径 Vue 探测 + 回放功能 + 进度条拖动 + token自举）
 // @author           https://github.com/Nolan180940
 // @match            https://live.kankanews.com/*
 // @match            https://m.kankanews.com/*
@@ -18,7 +18,7 @@
 (function() {
     "use strict";
 
-    console.log("[SMGTV] ========== v0.17 ==========");
+    console.log("[SMGTV] ========== v0.18 ==========");
     console.log("[SMGTV] URL:", location.href);
 
     // ===== 0. Mobile handling =====
@@ -172,9 +172,275 @@
         return null;
     }
 
-    // ===== 4b. Replay: build volc-stream shift URL for past programs =====
+    // ===== 4b. Token bootstrap (v0.18) =====
+    // 2026-09: server emptied live_address for ch10, so there is no live player
+    // URL to steal a token from. But the CDN does NOT verify whether a program
+    // is copyrighted — any valid token works with &startTime= for any timestamp.
+    // So we fetch program/detail for a program that still carries a
+    // shift_address (daily sports news, is_review=1), RSA-decrypt it with the
+    // page's own public key (same algorithm as webpack module 560/E.a), and use
+    // the resulting token for all shift URLs. Token is cached (~12h validity).
+    var SMG_PUBKEY = "-----BEGIN PUBLIC KEY-----\n" +
+        "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDP5hzPUW5RFeE2xBT1ERB3hHZI\n" +
+        "Votn/qatWhgc1eZof09qKjElFN6Nma461ZAwGpX4aezKP8Adh4WJj4u2O54xCXDt\n" +
+        "wzKRqZO2oNZkuNmF2Va8kLgiEQAAcxYc8JgTN+uQQNpsep4n/o1sArTJooZIF17E\n" +
+        "tSqSgXDcJ7yDj5rc7wIDAQAB\n" +
+        "-----END PUBLIC KEY-----";
+    var SMG_API_SECRET = "28c8edde3d61a0411511d3b1866f0636";
+    var SMG_API_VERSION = "2.42.23";
+    var SMG_DONOR_IDS = [2215494];
+    var _smgTokenCache = null;
+
+    function smgMd5(str) {
+        function rl(n, c) { return (n << c) | (n >>> (32 - c)); }
+        function add(x, y) {
+            var l = (x & 0xffff) + (y & 0xffff);
+            var m = (x >> 16) + (y >> 16) + (l >> 16);
+            return (m << 16) | (l & 0xffff);
+        }
+        function cmn(q, a, b, x, s, t) {
+            a = add(add(a, q), add(x, t));
+            return add(rl(a, s), b);
+        }
+        function ff(a, b, c, d, x, s, t) { return cmn((b & c) | ((~b) & d), a, b, x, s, t); }
+        function gg(a, b, c, d, x, s, t) { return cmn((b & d) | (c & (~d)), a, b, x, s, t); }
+        function hh(a, b, c, d, x, s, t) { return cmn(b ^ c ^ d, a, b, x, s, t); }
+        function ii(a, b, c, d, x, s, t) { return cmn(c ^ (b | (~d)), a, b, x, s, t); }
+        function binl(s) {
+            var b = [];
+            var m = (1 << 8) - 1;
+            for (var i = 0; i < s.length * 8; i += 8) b[i >> 5] |= (s.charCodeAt(i / 8) & m) << (i % 32);
+            return b;
+        }
+        function binl2hex(b) {
+            var h = "0123456789abcdef";
+            var s = "";
+            for (var i = 0; i < b.length * 4; i++) {
+                s += h.charAt((b[i >> 2] >> ((i % 4) * 8 + 4)) & 0xf) + h.charAt((b[i >> 2] >> ((i % 4) * 8)) & 0xf);
+            }
+            return s;
+        }
+        str = unescape(encodeURIComponent(str));
+        var x = binl(str);
+        x[str.length >> 2] |= 0x80 << ((str.length % 4) << 3);
+        x[(((str.length + 8) >> 6) << 4) + 14] = str.length * 8;
+        var a = 1732584193, b = -271733879, c = -1732584194, d = 271733878;
+        for (var i = 0; i < x.length; i += 16) {
+            var oa = a, ob = b, oc = c, od = d;
+            a = ff(a, b, c, d, x[i], 7, -680876936); d = ff(d, a, b, c, x[i+1], 12, -389564586);
+            c = ff(c, d, a, b, x[i+2], 17, 606105819); b = ff(b, c, d, a, x[i+3], 22, -1044525330);
+            a = ff(a, b, c, d, x[i+4], 7, -176418897); d = ff(d, a, b, c, x[i+5], 12, 1200080426);
+            c = ff(c, d, a, b, x[i+6], 17, -1473231341); b = ff(b, c, d, a, x[i+7], 22, -45705983);
+            a = ff(a, b, c, d, x[i+8], 7, 1770035416); d = ff(d, a, b, c, x[i+9], 12, -1958414417);
+            c = ff(c, d, a, b, x[i+10], 17, -42063); b = ff(b, c, d, a, x[i+11], 22, -1990404162);
+            a = ff(a, b, c, d, x[i+12], 7, 1804603682); d = ff(d, a, b, c, x[i+13], 12, -40341101);
+            c = ff(c, d, a, b, x[i+14], 17, -1502002290); b = ff(b, c, d, a, x[i+15], 22, 1236535329);
+            a = gg(a, b, c, d, x[i+1], 5, -165796510); d = gg(d, a, b, c, x[i+6], 9, -1069501632);
+            c = gg(c, d, a, b, x[i+11], 14, 643717713); b = gg(b, c, d, a, x[i], 20, -373897302);
+            a = gg(a, b, c, d, x[i+5], 5, -701558691); d = gg(d, a, b, c, x[i+10], 9, 38016083);
+            c = gg(c, d, a, b, x[i+15], 14, -660478335); b = gg(b, c, d, a, x[i+4], 20, -405537848);
+            a = gg(a, b, c, d, x[i+9], 5, 568446438); d = gg(d, a, b, c, x[i+14], 9, -1019803690);
+            c = gg(c, d, a, b, x[i+3], 14, -187363961); b = gg(b, c, d, a, x[i+8], 20, 1163531501);
+            a = gg(a, b, c, d, x[i+13], 5, -1444681467); d = gg(d, a, b, c, x[i+2], 9, -51403784);
+            c = gg(c, d, a, b, x[i+7], 14, 1735328473); b = gg(b, c, d, a, x[i+12], 20, -1926607734);
+            a = hh(a, b, c, d, x[i+5], 4, -378558); d = hh(d, a, b, c, x[i+8], 11, -2022574463);
+            c = hh(c, d, a, b, x[i+11], 16, 1839030562); b = hh(b, c, d, a, x[i+14], 23, -35309556);
+            a = hh(a, b, c, d, x[i+1], 4, -1530992060); d = hh(d, a, b, c, x[i+4], 11, 1272893353);
+            c = hh(c, d, a, b, x[i+7], 16, -155497632); b = hh(b, c, d, a, x[i+10], 23, -1094730640);
+            a = hh(a, b, c, d, x[i+13], 4, 681279174); d = hh(d, a, b, c, x[i], 11, -358537222);
+            c = hh(c, d, a, b, x[i+3], 16, -722521979); b = hh(b, c, d, a, x[i+6], 23, 76029189);
+            a = hh(a, b, c, d, x[i+9], 4, -640364487); d = hh(d, a, b, c, x[i+12], 11, -421815835);
+            c = hh(c, d, a, b, x[i+15], 16, 530742520); b = hh(b, c, d, a, x[i+2], 23, -995338651);
+            a = ii(a, b, c, d, x[i], 6, -198630844); d = ii(d, a, b, c, x[i+7], 10, 1126891415);
+            c = ii(c, d, a, b, x[i+14], 15, -1416354905); b = ii(b, c, d, a, x[i+5], 21, -57434055);
+            a = ii(a, b, c, d, x[i+12], 6, 1700485571); d = ii(d, a, b, c, x[i+3], 10, -1894986606);
+            c = ii(c, d, a, b, x[i+10], 15, -1051523); b = ii(b, c, d, a, x[i+1], 21, -2054922799);
+            a = ii(a, b, c, d, x[i+8], 6, 1873313359); d = ii(d, a, b, c, x[i+15], 10, -30611744);
+            c = ii(c, d, a, b, x[i+6], 15, -1560198380); b = ii(b, c, d, a, x[i+13], 21, 1309151649);
+            a = ii(a, b, c, d, x[i+4], 6, -145523070); d = ii(d, a, b, c, x[i+11], 10, -1120210379);
+            c = ii(c, d, a, b, x[i+2], 15, 718787259); b = ii(b, c, d, a, x[i+9], 21, -343485551);
+            a = add(a, oa); b = add(b, ob); c = add(c, oc); d = add(d, od);
+        }
+        return binl2hex([a, b, c, d]);
+    }
+
+    function smgRsaDecrypt(enc) {
+        try {
+            if (!enc || typeof enc !== "string") return "";
+            if (typeof JSEncrypt === "undefined") return "";
+            var hex = window.atob(enc).split("").map(function(ch) {
+                return ("0" + ch.charCodeAt(0).toString(16)).slice(-2);
+            }).join("").toUpperCase();
+            if (!hex) return "";
+            var crypt = new JSEncrypt();
+            crypt.setPublicKey(SMG_PUBKEY);
+            var out = "";
+            for (var pos = 0; pos < hex.length;) {
+                var chunk = hex.slice(pos, pos + 256);
+                pos += 256;
+                var bytes = (chunk.replace(/\r|\n/g, "").match(/[\da-fA-F]{2}/g) || [])
+                    .map(function(h) { return parseInt(h, 16); });
+                var b64 = window.btoa(String.fromCharCode.apply(String, bytes));
+                if (!b64) continue;
+                var m = crypt.decrypt(b64);
+                if (m) out += m;
+            }
+            return out;
+        } catch (e) {
+            console.warn("[SMGTV] smgRsaDecrypt failed:", e && e.message);
+            return "";
+        }
+    }
+
+    function smgSignParams(params) {
+        var n = {
+            platform: "pc",
+            version: SMG_API_VERSION,
+            nonce: Math.random().toString(36).slice(-8),
+            timestamp: Math.floor(Date.now() / 1000),
+            "Api-Version": "v1"
+        };
+        var merged = {};
+        var k;
+        for (k in params) merged[k] = params[k];
+        for (k in n) merged[k] = n[k];
+        var keys = Object.keys(merged).sort();
+        var s = "";
+        for (var i = 0; i < keys.length; i++) {
+            if (merged[keys[i]] != null) s += keys[i] + "=" + merged[keys[i]] + "&";
+        }
+        merged.sign = smgMd5(smgMd5(s + SMG_API_SECRET));
+        return merged;
+    }
+
+    // NOTE: sign fields MUST go in headers, NOT in the query string. The server
+    // verifies the signature but ALSO gates address fields on request shape:
+    // the same signature sent as query params returns code 4001 with empty
+    // addresses, while header form returns code 1000 with addresses.
+    function smgApiGet(path, params) {
+        var signed = smgSignParams(params || {});
+        var q = Object.keys(params || {}).map(function(k) {
+            return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]);
+        }).join("&");
+        var headers = { "Accept": "application/json, text/plain, */*" };
+        var hk;
+        for (hk in signed) headers[hk] = signed[hk];
+        headers["M-Uuid"] = localStorage.getItem("uuid") || "";
+        return fetch("https://kapi.kankanews.com" + path + (q ? "?" + q : ""), {
+            headers: headers
+        }).then(function(resp) { return resp.json(); });
+    }
+
+    function smgTokenFromUrl(url) {
+        try {
+            var u = new URL(url);
+            var token = u.searchParams.get("token");
+            if (!token) return null;
+            var match = u.pathname.match(/\/live\/([^/]+)\//);
+            if (!match) return null;
+            var payload = JSON.parse(atob(token.split(".")[1]));
+            return {
+                token: token,
+                volcSecret: u.searchParams.get("volcSecret"),
+                volcTime: u.searchParams.get("volcTime"),
+                stream: match[1],
+                exp: payload.exp || 0
+            };
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function smgTokenValid(t) {
+        return !!t && !!t.token && (t.exp * 1000 - Date.now() > 5 * 60 * 1000);
+    }
+
+    function smgFindDonorId(vue) {
+        try {
+            var lists = [vue.programList, vue.currentProgramList, vue.playingProgramList];
+            for (var i = 0; i < lists.length; i++) {
+                var arr = lists[i];
+                if (!Array.isArray(arr)) continue;
+                for (var j = 0; j < arr.length; j++) {
+                    if (arr[j] && arr[j].is_review === 1 && arr[j].id) return arr[j].id;
+                }
+            }
+        } catch (e) {}
+        return SMG_DONOR_IDS[0];
+    }
+
+    function smgEnsureToken(vue, cb) {
+        if (smgTokenValid(_smgTokenCache)) {
+            cb(_smgTokenCache);
+            return;
+        }
+        // Candidate donor IDs: today's reviewable program first, then known-good
+        // history. Only programs with is_review=1 carry a shift_address; all
+        // others return empty addresses and must be skipped, not failed on.
+        var tried = {};
+        var queue = [];
+        var first = smgFindDonorId(vue);
+        if (first) queue.push(first);
+        for (var i = 0; i < SMG_DONOR_IDS.length; i++) {
+            if (SMG_DONOR_IDS[i] !== first) queue.push(SMG_DONOR_IDS[i]);
+        }
+        console.log("[SMGTV] [Token] donor queue:", queue.join(","));
+        function tryNext() {
+            if (!queue.length) {
+                console.error("[SMGTV] [Token] bootstrap failed: all donors empty");
+                cb(null);
+                return;
+            }
+            var donorId = queue.shift();
+            if (tried[donorId]) {
+                tryNext();
+                return;
+            }
+            tried[donorId] = true;
+            console.log("[SMGTV] [Token] fetching donor program/detail:", donorId);
+            smgApiGet("/content/pc/tv/program/detail", { channel_program_id: donorId }).then(function(data) {
+                var res = (data && data.result) || {};
+                var enc = res.channel_info && res.channel_info.shift_address;
+                if (!enc && res.channel_info && res.channel_info.live_address) {
+                    enc = res.channel_info.live_address;
+                }
+                if (!enc) {
+                    console.warn("[SMGTV] [Token] donor empty, trying next (id=" + donorId + ")");
+                    tryNext();
+                    return;
+                }
+                var plain = smgRsaDecrypt(enc);
+                if (!plain) throw new Error("donor decrypt failed (id=" + donorId + ")");
+                var t = smgTokenFromUrl(plain);
+                if (!t) throw new Error("donor URL parse failed (id=" + donorId + ")");
+                _smgTokenCache = t;
+                if (SMG_DONOR_IDS[0] !== donorId) SMG_DONOR_IDS.unshift(donorId);
+                console.log("[SMGTV] [Token] ready via donor " + donorId + ", stream=" + t.stream,
+                    "exp=" + new Date(t.exp * 1000).toLocaleString());
+                cb(t);
+            }).catch(function(e) {
+                console.warn("[SMGTV] [Token] donor error, trying next:",
+                    e && e.message);
+                tryNext();
+            });
+        }
+        tryNext();
+    }
+
+    function smgBuildShiftUrl(t, startTime) {
+        if (!t) return null;
+        return "https://volc-stream.kksmg.com/live/" + t.stream +
+            "/index.m3u8?token=" + t.token +
+            "&volcSecret=" + t.volcSecret +
+            "&volcTime=" + t.volcTime +
+            "&startTime=" + startTime;
+    }
+
+    // ===== 4c. Replay: build volc-stream shift URL for past programs =====
     // The CDN supports time-shift via &startTime= parameter on the same /live/ stream.
     // Each manifest returns ~30s; HLS.js auto-polls for continuous playback.
+    // v0.18: token comes from the async donor bootstrap (smgEnsureToken), NOT from
+    // the live player URL (server emptied ch10 live_address, so no live URL exists).
     function buildShiftUrl(playerUrl, startTime) {
         try {
             var url = new URL(playerUrl);
@@ -210,11 +476,21 @@
         vue.initPlayer = function() {
             try {
                 var pObj = vue.programObj;
-                // Past program (play=0) with start_time — create player directly
-                if (pObj && pObj.play === 0 && pObj.start_time) {
-                    var liveUrl = (vue.player && vue.player.config && vue.player.config.url) || "";
-                    if (liveUrl) {
-                        var shiftUrl = buildShiftUrl(liveUrl, pObj.start_time);
+                // Any program with start_time — create player directly via donor token.
+                // v0.18: server emptied ch10 live_address, so the old "steal token from
+                // live player URL" path is dead. smgEnsureToken fetches a donor
+                // shift_address (daily sports news) and decrypts a fresh token.
+                // Works for live-edge (play=1, startTime=now-30s) and replay alike.
+                if (pObj && pObj.start_time) {
+                    var self = this;
+                    var args = arguments;
+                    var wantStart = (pObj.play === 0) ? pObj.start_time : Math.floor(Date.now() / 1000) - 30;
+                    smgEnsureToken(vue, function(t) {
+                        if (!t) {
+                            console.error("[SMGTV] [Replay] no token, falling back to orig initPlayer");
+                            return origInitPlayer.apply(self, args);
+                        }
+                        var shiftUrl = smgBuildShiftUrl(t, wantStart);
                         if (shiftUrl) {
                             pObj.is_shield = 0;
                             pObj.is_review = 1;
@@ -371,7 +647,7 @@
                                             _seekSwitchQueue = _seekSwitchQueue.catch(function() {}).then(function() {
                                                 if (finalGeneration !== _seekGeneration) return;
 
-                                                var seekUrl = buildShiftUrl(liveUrl, finalTs);
+                                                var seekUrl = smgBuildShiftUrl(_smgTokenCache, finalTs);
                                                 if (!seekUrl || typeof player.switchURL !== "function") {
                                                     console.error("[SMGTV] [Replay] switchURL unavailable; seek cancelled");
                                                     _isSeeking = false;
@@ -471,8 +747,11 @@
                                 "url:", shiftUrl.substring(0, 80));
                             return;
                         }
-                    }
-                    console.warn("[SMGTV] [Replay] No live URL for shift, falling back to orig initPlayer");
+                        console.warn("[SMGTV] [Replay] shift URL build failed, falling back to orig initPlayer");
+                        return origInitPlayer.apply(self, args);
+                    });
+                    // Token fetch is async; tell the caller we handled it.
+                    return;
                 }
             } catch(e) {
                 console.error("[SMGTV] [Replay] initPlayer intercept error:", e);
