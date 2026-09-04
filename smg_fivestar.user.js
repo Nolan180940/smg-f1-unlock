@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name             收看SMGTV电视节目
 // @namespace        http://tampermonkey.net/
-// @version          0.18
+// @version          0.19
 // @description      打开网页即可收看SMGTV，并解除试看倒计时与切页暂停等限制（Safari/Stay 兼容 + 多路径 Vue 探测 + 回放功能 + 进度条拖动 + token自举）
 // @author           https://github.com/Nolan180940
 // @match            https://live.kankanews.com/*
@@ -18,7 +18,7 @@
 (function() {
     "use strict";
 
-    console.log("[SMGTV] ========== v0.18 ==========");
+    console.log("[SMGTV] ========== v0.19 ==========");
     console.log("[SMGTV] URL:", location.href);
 
     // ===== 0. Mobile handling =====
@@ -352,8 +352,15 @@
         }
     }
 
+    // v0.19: server shortened token TTL (seen 6min). Refresh proactively well
+    // before expiry so live playback never hits a 403 mid-stream.
+    var SMG_TOKEN_REFRESH_MARGIN = 120 * 1000;
     function smgTokenValid(t) {
-        return !!t && !!t.token && (t.exp * 1000 - Date.now() > 5 * 60 * 1000);
+        return !!t && !!t.token && (t.exp * 1000 - Date.now() > SMG_TOKEN_REFRESH_MARGIN);
+    }
+    function smgTokenMsLeft(t) {
+        if (!t || !t.exp) return 0;
+        return t.exp * 1000 - Date.now();
     }
 
     function smgFindDonorId(vue) {
@@ -485,6 +492,85 @@
             "&startTime=" + startTime;
     }
 
+    // v0.19: bare live manifest (native sliding window, no startTime).
+    function smgBuildLiveUrl(t) {
+        if (!t) return null;
+        return "https://volc-stream.kksmg.com/live/" + t.stream +
+            "/index.m3u8?token=" + t.token +
+            "&volcSecret=" + t.volcSecret +
+            "&volcTime=" + t.volcTime;
+    }
+
+    // v0.19: live watchdog — refresh token + switchURL before expiry, and
+    // recover from 403/fatal HLS errors by rebuilding the source.
+    var _smgWatchdogTimer = null;
+    function smgStartLiveWatchdog(vue, player, getUrl) {
+        smgStopLiveWatchdog();
+        var failures = 0;
+        _smgWatchdogTimer = setInterval(function() {
+            try {
+                if (!vue.player || vue.player !== player) {
+                    smgStopLiveWatchdog();
+                    return;
+                }
+                var left = smgTokenMsLeft(_smgTokenCache);
+                if (left < SMG_TOKEN_REFRESH_MARGIN) {
+                    console.log("[SMGTV] [Live] token expiring in " + Math.max(0, Math.round(left / 1000)) +
+                        "s, refreshing...");
+                    _smgTokenCache = null;
+                    smgEnsureToken(vue, function(t) {
+                        if (!t || !vue.player || vue.player !== player) return;
+                        var url = getUrl(t);
+                        if (!url || typeof player.switchURL !== "function") return;
+                        console.log("[SMGTV] [Live] switching to fresh token URL");
+                        try {
+                            Promise.resolve(player.switchURL(url, { seamless: false, currentTime: 0 }))
+                                .then(function() {
+                                    failures = 0;
+                                    if (player.paused) { try { player.play(); } catch (e) {} }
+                                    console.log("[SMGTV] [Live] token refresh done");
+                                })
+                                .catch(function(e) {
+                                    console.error("[SMGTV] [Live] token refresh failed:", e && e.message);
+                                });
+                        } catch (e) {
+                            console.error("[SMGTV] [Live] switchURL threw:", e && e.message);
+                        }
+                    });
+                    return;
+                }
+                // Stalled with error? try one seamless recovery.
+                var vd = player.video;
+                if (vd && vd.error && vd.error.code === 4 && failures < 3) {
+                    failures++;
+                    console.warn("[SMGTV] [Live] media error 4, recovery attempt " + failures);
+                    _smgTokenCache = null;
+                    smgEnsureToken(vue, function(t) {
+                        if (!t || !vue.player || vue.player !== player) return;
+                        var url = getUrl(t);
+                        if (!url || typeof player.switchURL !== "function") return;
+                        try {
+                            Promise.resolve(player.switchURL(url, { seamless: false, currentTime: 0 }))
+                                .then(function() { if (player.paused) { try { player.play(); } catch (e) {} } })
+                                .catch(function() {});
+                        } catch (e) {}
+                    });
+                } else if (vd && !vd.error) {
+                    failures = 0;
+                }
+            } catch (e) {
+                console.warn("[SMGTV] [Live] watchdog tick failed:", e && e.message);
+            }
+        }, 30000);
+        console.log("[SMGTV] [Live] watchdog started (30s tick)");
+    }
+    function smgStopLiveWatchdog() {
+        if (_smgWatchdogTimer) {
+            clearInterval(_smgWatchdogTimer);
+            _smgWatchdogTimer = null;
+        }
+    }
+
     // ===== 4c. Replay: build volc-stream shift URL for past programs =====
     // The CDN supports time-shift via &startTime= parameter on the same /live/ stream.
     // Each manifest returns ~30s; HLS.js auto-polls for continuous playback.
@@ -533,13 +619,19 @@
                 if (pObj && pObj.start_time) {
                     var self = this;
                     var args = arguments;
-                    var wantStart = (pObj.play === 0) ? pObj.start_time : Math.floor(Date.now() / 1000) - 30;
+                    // v0.19: live uses the BARE manifest (native sliding window).
+                    // The old startTime=now-30s trick pins playback to a fixed
+                    // window whose token expires mid-stream (server now issues
+                    // ~6min TTL) → 403 → spinner. Bare URL + watchdog refresh
+                    // keeps live running indefinitely.
+                    var isLiveEdge = pObj.play !== 0;
+                    var wantStart = isLiveEdge ? 0 : pObj.start_time;
                     smgEnsureToken(vue, function(t) {
                         if (!t) {
                             console.error("[SMGTV] [Replay] no token, falling back to orig initPlayer");
                             return origInitPlayer.apply(self, args);
                         }
-                        var shiftUrl = smgBuildShiftUrl(t, wantStart);
+                        var shiftUrl = isLiveEdge ? smgBuildLiveUrl(t) : smgBuildShiftUrl(t, wantStart);
                         if (shiftUrl) {
                             pObj.is_shield = 0;
                             pObj.is_review = 1;
@@ -550,10 +642,9 @@
                             volume = volume ? Number(volume) : 0.5;
 
                             // Track program start time for dynamic startTime calculation.
-                            // Live (play=1): the shift manifest is a sliding window at the
-                            // live edge — plain live manifest, NO virtual-pos rewriting.
-                            var isLiveEdge = pObj.play !== 0;
-                            var programStartTime = isLiveEdge ? wantStart : pObj.start_time;
+                            // Live (play=1): bare manifest is already a sliding window —
+                            // NO virtual-pos rewriting, watchdog handles token refresh.
+                            var programStartTime = isLiveEdge ? Math.floor(Date.now() / 1000) : pObj.start_time;
                             var programEndTime = pObj.end_time || (programStartTime + 7200);
 
                             vue.player = new vue.$xgplayer({
@@ -775,8 +866,15 @@
                             }
 
                             // Live-edge needs no virtual-pos machinery: the manifest is
-                            // already a live sliding window. Only hook for replay.
-                            if (!isLiveEdge) hookManifestLoader(vue.player);
+                            // already a live sliding window. Watchdog keeps the token
+                            // fresh instead. Only hook for replay.
+                            if (!isLiveEdge) {
+                                hookManifestLoader(vue.player);
+                            } else {
+                                smgStartLiveWatchdog(vue, vue.player, function(tok) {
+                                    return smgBuildLiveUrl(tok);
+                                });
+                            }
 
                             // Event handlers
                             vue.player.on("canplay", function() {

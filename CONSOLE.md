@@ -22,7 +22,7 @@
 > 解密出有效 token，CDN 不校验节目版权，任意时间戳均可播放。
 
 ```js
-// SMGTV 直播 + 回放 — Console 版 (v0.18)
+// SMGTV 直播 + 回放 — Console 版 (v0.19)
 (function(){
     var v=document.querySelector('.huikan').__vue__;
     if(!v){console.error('[SMGTV] 未找到Vue组件');return}
@@ -97,7 +97,9 @@
         var mt=u.pathname.match(/\/live\/([^/]+)\//);if(!mt)return null;
         var pl=JSON.parse(atob(t.split('.')[1]));
         return{token:t,volcSecret:u.searchParams.get('volcSecret'),volcTime:u.searchParams.get('volcTime'),stream:mt[1],exp:pl.exp||0}}catch(e){return null}}
-    function tokValid(t){return!!t&&!!t.token&&(t.exp*1000-Date.now()>5*60*1000)}
+    var REFRESH_MARGIN=120*1000; // v0.19: token TTL 已缩短（实测 6 分钟），提前 2 分钟刷新
+    function tokValid(t){return!!t&&!!t.token&&(t.exp*1000-Date.now()>REFRESH_MARGIN)}
+    function tokLeft(t){return(!t||!t.exp)?0:t.exp*1000-Date.now()}
     function findDonor(){var ls=[v.programList,v.currentProgramList,v.playingProgramList];
         for(var i=0;i<ls.length;i++){if(!Array.isArray(ls[i]))continue;
             for(var j=0;j<ls[i].length;j++)if(ls[i][j]&&ls[i][j].is_review===1&&ls[i][j].id)return ls[i][j].id}
@@ -138,7 +140,7 @@
                 console.log('[SMGTV] [Token] 就绪, donor='+did+', stream='+t.stream);
                 cb(t)}).catch(function(e){console.warn('[SMGTV] [Token] donor 出错，换下一个:',e&&e.message);next()})})()}
 
-    // ===== 3. 构建偏移URL的函数（token 来自自举，不再依赖直播播放器） =====
+    // ===== 3. 构建 URL（v0.19: 直播用裸 manifest + 看门狗刷新 token） =====
     function makeShift(ts){
         if(!tokValid(_tok)){console.error('[SMGTV] token 未就绪，请稍后重试');return null}
         return 'https://volc-stream.kksmg.com/live/'+_tok.stream
@@ -147,26 +149,63 @@
             +'&volcTime='+_tok.volcTime
             +'&startTime='+ts;
     }
-    window.makeShift=makeShift;
-    // 预取 token（页面加载后即开始，~12h 有效）
+    function makeLive(){
+        if(!tokValid(_tok)){console.error('[SMGTV] token 未就绪，请稍后重试');return null}
+        return 'https://volc-stream.kksmg.com/live/'+_tok.stream
+            +'/index.m3u8?token='+_tok.token
+            +'&volcSecret='+_tok.volcSecret
+            +'&volcTime='+_tok.volcTime;
+    }
+    window.makeShift=makeShift;window.makeLive=makeLive;
+    // 预取 token（页面加载后即开始，TTL 短，靠看门狗续期）
     ensureTok(function(t){if(t)console.log('[SMGTV] ✅ token 已就绪，可点击节目播放')});
+    // v0.19: 直播看门狗 — token 快过期则刷新并切源；media error 4 则重建恢复
+    var _wdTmr=null;
+    function stopWd(){if(_wdTmr){clearInterval(_wdTmr);_wdTmr=null}}
+    function startWd(){
+        stopWd();var fails=0;
+        _wdTmr=setInterval(function(){
+            try{
+                var pl=v.player;if(!pl)return;
+                if(tokLeft(_tok)<REFRESH_MARGIN){
+                    console.log('[SMGTV] [Live] token 将过期，刷新中…');
+                    _tok=null;
+                    ensureTok(function(t){
+                        if(!t||!v.player||v.player!==pl)return;
+                        var url=makeLive();if(!url||typeof pl.switchURL!=='function')return;
+                        Promise.resolve(pl.switchURL(url,{seamless:false,currentTime:0})).then(function(){
+                            fails=0;if(pl.paused)try{pl.play()}catch(e){}
+                            console.log('[SMGTV] [Live] token 已刷新')}).catch(function(e){console.error('[SMGTV] [Live] 刷新失败:',e&&e.message)})});
+                    return}
+                var vd=pl.video;
+                if(vd&&vd.error&&vd.error.code===4&&fails<3){
+                    fails++;console.warn('[SMGTV] [Live] 媒体错误，恢复中 ('+fails+'/3)');
+                    _tok=null;
+                    ensureTok(function(t){
+                        if(!t||!v.player||v.player!==pl)return;
+                        var url=makeLive();if(!url||typeof pl.switchURL!=='function')return;
+                        try{Promise.resolve(pl.switchURL(url,{seamless:false,currentTime:0})).then(function(){if(pl.paused)try{pl.play()}catch(e){}}).catch(function(){})}catch(e){}})}
+                else if(vd&&!vd.error){fails=0}
+            }catch(e){}
+        },30000);
+        console.log('[SMGTV] [Live] 看门狗已启动')}
 
-    // ===== 4. 拦截 initPlayer：直播走直播边缘，回放走节目起点（v0.18: 动态 startTime + 真正切源寻道） =====
+    // ===== 4. 拦截 initPlayer（v0.19: 直播用裸 manifest + 看门狗，回放走节目起点） =====
     var origInit=v.initPlayer;
     v.initPlayer=function(){
         var p=v.programObj;
         if(p&&p.start_time){
             var self=this,args=arguments;
-            var want=(p.play===0)?p.start_time:Math.floor(Date.now()/1000)-30;
+            var isLive0=p.play!==0;
             ensureTok(function(t){
                 if(!t){console.error('[SMGTV] 无 token，回退原 initPlayer');return origInit.apply(self,args)}
-                var url=makeShift(want);
-                if(!url){console.error('[SMGTV] makeShift 失败');return}
+                var url=isLive0?makeLive():makeShift(p.start_time);
+                if(!url){console.error('[SMGTV] URL 构建失败');return}
                 try{
                 var isLive=p.play!==0;
-                var pStart=isLive?want:p.start_time;
-                var pEnd=isLive?(want+3600):(p.end_time||(pStart+7200));
-                console.log('[SMGTV] [回放] 正在播放:',p.name,'时间戳:',pStart);
+                var pStart=isLive?Math.floor(Date.now()/1000):p.start_time;
+                var pEnd=isLive?(pStart+3600):(p.end_time||(pStart+7200));
+                console.log('[SMGTV] ['+(isLive?'直播':'回放')+'] 正在播放:',p.name,'时间戳:',pStart);
                 v.destroyPlayer();
                 var vol=Number(localStorage.getItem('playerVolume'))||0.5;
                 v.player=new v.$xgplayer({
@@ -262,6 +301,7 @@
                 v.player.on('ended',function(){
                     if(v.programObj.play===0&&v.playNextProgram)v.playNextProgram()
                 });
+                if(isLive)startWd();
                 setTimeout(function(){v.player.play()},200);
                 return;
                 }catch(e){console.error('[SMGTV] [回放] 失败:',e)}
@@ -272,7 +312,7 @@
     };
 
     console.log('[SMGTV] ✅ 已就绪！token 获取中，稍后点击节目即可播放');
-    console.log('[SMGTV] 👉 点击左侧节目列表中的历史节目即可回放（v0.18 支持进度条拖动）');
+    console.log('[SMGTV] 👉 点击左侧节目列表中的历史节目即可回放（v0.19 支持进度条拖动）');
     console.log('[SMGTV] 👉 或在Console输入 makeShift(时间戳) 获取回放URL');
 })();
 ```
