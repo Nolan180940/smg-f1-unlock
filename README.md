@@ -9,7 +9,7 @@
 ### ① Tampermonkey 脚本（推荐）
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 浏览器插件
-2. 点击图标 → **创建新脚本** → 粘贴 [`smg_fivestar.user.js`](./smg_fivestar.user.js) 全部内容 → **Ctrl+S** 保存
+2. 点击 → [安装脚本](https://github.com/Nolan180940/smg-f1-unlock/raw/refs/heads/master/smg_fivestar.user.js)
 3. 打开 [看看新闻](https://live.kankanews.com/huikan?id=10) 即可自动生效
 
 **功能：**
