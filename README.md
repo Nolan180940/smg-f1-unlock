@@ -14,12 +14,13 @@
 
 **功能：**
 - ✅ 绕过版权限制（`is_shield` / `is_review` / `copyright_image`）
-- ✅ 直播 + 回放（点击左侧历史节目即可回看，支持进度条拖动）
+- ✅ 直播（打开页面自动播放当前节目，token 过期自动刷新不断流）
+- ✅ 回放（点击左侧历史节目即可回看，支持进度条拖动）
 - ✅ 拦截试看倒计时、标签页切换暂停
 - ✅ SPA 路由切换自动重新打补丁
 - ✅ Safari / Stay 兼容
 
-> 脚本 v0.17，详见 [`smg_fivestar.user.js`](./smg_fivestar.user.js)
+> 当前版本 v0.19，详见 [`smg_fivestar.user.js`](./smg_fivestar.user.js)
 
 ---
 
@@ -35,58 +36,10 @@
 
 | 模式 | 功能 | 代码 |
 |------|------|------|
-| **A. 直播 + 回放**（推荐） | 绕过版权 + 点击历史节目回放 + 进度条拖动 | [`CONSOLE.md` 模式 A](./CONSOLE.md#模式-a直播--回放v017推荐) |
-| **B. 仅直播** | 仅绕过版权限制看直播 | [`CONSOLE.md` 模式 B](./CONSOLE.md#模式-b仅直播精简版不含回放) |
+| **A. 直播 + 回放**（推荐） | 打开即播当前直播（token 自动刷新）+ 点击历史节目回放 + 进度条拖动 | [`CONSOLE.md` 模式 A](./CONSOLE.md#模式-a直播--回放v019推荐) |
+| **B. 仅直播** | 备用精简版（v0.18 起服务端已清空流地址，仅其他频道可用） | [`CONSOLE.md` 模式 B](./CONSOLE.md#模式-b仅直播精简版不含回放) |
 
-> ⚠️ 刷新页面后需要重新粘贴。详见 [`CONSOLE.md`](./CONSOLE.md)
-
----
-
-### ③ PowerShell 自动化（未更新，仅直播）
-
-双击 [`run.bat`](./run.bat)，脚本会自动打开 Edge 并通过 CDP 注入 JS 绕过版权限制。
-
-> ⚠️ **暂不支持回放**，仅直播。回放请使用上方两种方式。
-
----
-
-## 工作原理
-
-### 直播绕过
-
-看看新闻是 Nuxt.js（Vue 2）应用，服务端返回 `is_shield=1` + `copyright_image` 版权遮罩。前端据此拦截播放器初始化。
-
-**绕过步骤：**
-1. 隐藏 `.image-mask` 遮罩图
-2. 修改 Vue 数据：`is_shield=0`、`is_review=1`、`can_review=1`、清空 `copyright_image`
-3. 恢复 `live_address`（从频道接口复制到节目详情）
-4. 关闭 `isCopyright` 开关，调用 `initPlayer()`
-
-### 回放原理
-
-看看新闻的 CDN（字节跳动 volc-stream）**支持时间偏移**，只是前端没有用。
-
-在直播流 URL 后加 `&startTime=UNIX_TIMESTAMP`，CDN 就返回该时间点的 HLS 流（最近 5 分钟 ~ 12 小时有效）。
-
-```
-直播流: .../index.m3u8?token=xxx&volcSecret=xxx&volcTime=xxx
-回放流: .../index.m3u8?token=xxx&volcSecret=xxx&volcTime=xxx&startTime=1787330880
-```
-
-**回放流程：**
-```
-点击回放节目 → 从直播流提取 token → 拼接 &startTime 构建偏移 URL
-    → new $xgplayer() 创建回放播放器
-    → Hook manifestLoader.load(): 每次轮询动态更新 startTime = 节目起点 + 播放位置
-    → 覆写 player.seek(): 拖动进度条时用 switchURL() 真切源
-    → 虚拟位置追踪器独立维护节目内位置（offsetCurrentTime）
-```
-
-**关键技术点：**
-- CDN shift manifest 返回固定 3 个分片（~30s），必须动态更新 `startTime` 防冻结
-- `player.switchURL()` 做完整 HLS 源切换（清旧缓冲 + 加载新 manifest）
-- `Object.defineProperty` 锁定 `offsetCurrentTime` 防止 HLS 插件重置
-- 150ms 防抖 + Promise 队列防止拖拽竞态
+> 当前版本 v0.19。⚠️ 刷新页面后需要重新粘贴。详见 [`CONSOLE.md`](./CONSOLE.md)
 
 ---
 
@@ -115,7 +68,6 @@
 | **iOS** Safari（Stay） | ✅ | ✅ | 已测试，必须开启"请求桌面网站" |
 | **Android** Kiwi Browser + Tampermonkey | ✅ | ✅ | 理论兼容 |
 | **Firefox** | ⚠️ | ⚠️ | 未测试 |
-| **PowerShell (run.bat)** | ✅ | ❌ | 仅直播，未更新回放功能 |
 
 ---
 
