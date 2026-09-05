@@ -17,7 +17,7 @@
 
 点击左侧节目列表中的历史节目即可回放，支持进度条拖动。
 
-> v0.18 说明：服务端已清空五星体育的 `live_address`，旧版"从直播播放器 URL 偷 token"已失效。
+> v0.18 说明：服务端已清空五星体育的 `live_address`，旧版"从直播播放器 URL 获取 token"已失效。
 > 新版改为 token 自举：从当天官方回放节目（`is_review=1`，如《体育新闻》）的 `shift_address`
 > 解密出有效 token，CDN 不校验节目版权，任意时间戳均可播放。
 
@@ -39,7 +39,7 @@
     v.$forceUpdate();
 
     // ===== 2. Token 自举（v0.18） =====
-    // 服务端已清空 ch10 live_address，无法再从直播播放器偷 token。
+    // 服务端已清空 ch10 live_address，无法再从直播播放器获取 token。
     // 改为：找一个官方回放节目（is_review=1）的 shift_address，RSA 解密出 token。
     var PUB='-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDP5hzPUW5RFeE2xBT1ERB3hHZI\nVotn/qatWhgc1eZof09qKjElFN6Nma461ZAwGpX4aezKP8Adh4WJj4u2O54xCXDt\nwzKRqZO2oNZkuNmF2Va8kLgiEQAAcxYc8JgTN+uQQNpsep4n/o1sArTJooZIF17E\ntSqSgXDcJ7yDj5rc7wIDAQAB\n-----END PUBLIC KEY-----';
     var SECRET='28c8edde3d61a0411511d3b1866f0636',VER='2.42.23';
