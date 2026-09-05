@@ -1,4 +1,7 @@
-node_modules/
-.opencode
-.env
-.env.local
+# Only track the userscript + docs; everything else is local-only and ignored
+/*
+!.gitignore
+!/LICENSE
+!/README.md
+!/CONSOLE.md
+!/smg_fivestar.user.js
